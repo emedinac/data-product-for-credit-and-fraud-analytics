@@ -18,6 +18,7 @@ services:
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       DATABASE_URL: postgresql://customer:customer@postgres:5432/customer_product
       LAKE_ROOT: /opt/project/lake
+      RAW_ROOT: /opt/project/raw_dev
       PYTHONPATH: /opt/project/src
     ports:
       - "8080:8080"
