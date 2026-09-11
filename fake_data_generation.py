@@ -1392,13 +1392,13 @@ def generate_support_text(
         )
 
     return (
-        f"Ticket ID: {random_id('TICKET')}\n"
+        f"Ticket ID: {random_id("TICKET")}\n"
         f"Customer: {customer_id}\n"
         f"Created: {mixed_date(random_date())}\n"
         f"Channel: {random.choice(INTERACTION_CHANNELS)}\n"
-        f"Priority: {random.choice(['LOW', 'MEDIUM', 'HIGH', 'URGENT'])}\n"
+        f"Priority: {random.choice(["LOW", "MEDIUM", "HIGH", "URGENT"])}\n"
         f"Subject: {subject}\n"
-        f"Language: {random.choice(['en', 'pt', 'es', 'fr'])}\n\n"
+        f"Language: {random.choice(["en", "pt", "es", "fr"])}\n\n"
         f"{body}\n"
     )
 
@@ -1498,15 +1498,15 @@ def generate_application_log(
 
     if style == 4:
         return (
-            f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"{timestamp.strftime("%Y-%m-%d %H:%M:%S")} "
             f"{level} {message} "
             f"cid={customer_id} "
-            f"request_id={random_id('REQ')}"
+            f"request_id={random_id("REQ")}"
         )
 
     if style == 5:
         return (
-            f"{timestamp.strftime('%d/%m/%Y %H:%M:%S')};"
+            f"{timestamp.strftime("%d/%m/%Y %H:%M:%S")};"
             f"{level};"
             f"{customer_id};"
             f"{message}"
@@ -1520,14 +1520,12 @@ def generate_application_log(
             f"msg='{message}'"
         )
 
-    service = random.choice(
-        ["payments", "fraud", "accounts", "auth", "customer"]
-    )
+    service = random.choice(["payments", "fraud", "accounts", "auth", "customer"])
     return (
         f"{timestamp.isoformat()} "
         f"{level} "
         f"service={service} "
-        f"request={random_id('REQ')} "
+        f"request={random_id("REQ")} "
         f"customer={customer_id} "
         f"message={message}"
     )
@@ -2223,7 +2221,7 @@ def write_manifest(
 ):
     manifest = {
         "generator": "payflow-raw-generator",
-        "generator_version": "2.0",
+        "generator_version": "3.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seed": args.seed,
         "requested_logical_records": args.records,
@@ -2448,7 +2446,7 @@ def main():
     # TRANSACTIONS
     # ========================================================
 
-    print(f"Generating {distribution['transaction']:,} transactions...")
+    print(f"Generating {distribution["transaction"]:,} transactions...")
 
     transaction_files = []
 
@@ -2503,7 +2501,7 @@ def main():
     # PAYMENTS
     # ========================================================
 
-    print(f"Generating {distribution['payment']:,} payments...")
+    print(f"Generating {distribution["payment"]:,} payments...")
 
     payment_files = []
 
@@ -2545,7 +2543,7 @@ def main():
     # FRAUD
     # ========================================================
 
-    print(f"Generating {distribution['fraud_event']:,} fraud events...")
+    print(f"Generating {distribution["fraud_event"]:,} fraud events...")
 
     fraud_files = []
 
