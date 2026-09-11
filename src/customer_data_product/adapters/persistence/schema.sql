@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS fraud_events (
     batch_id TEXT NOT NULL REFERENCES batches(batch_id)
 );
 
+CREATE TABLE IF NOT EXISTS interactions (
+    interaction_id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL REFERENCES customers(customer_id),
+    event_time TIMESTAMPTZ NOT NULL,
+    channel TEXT,
+    interaction_type TEXT,
+    resolution TEXT,
+    batch_id TEXT NOT NULL REFERENCES batches(batch_id)
+);
+
 CREATE TABLE IF NOT EXISTS customer_snapshots (
     customer_id TEXT PRIMARY KEY REFERENCES customers(customer_id),
     status TEXT,
@@ -76,6 +86,7 @@ CREATE TABLE IF NOT EXISTS customer_snapshots (
     declined_transaction_count INTEGER NOT NULL,
     fraud_event_count INTEGER NOT NULL,
     confirmed_fraud_count INTEGER NOT NULL,
+    interaction_count INTEGER NOT NULL,
     last_transaction_at TIMESTAMPTZ,
     batch_id TEXT NOT NULL REFERENCES batches(batch_id),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

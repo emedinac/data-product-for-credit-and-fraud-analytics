@@ -8,7 +8,13 @@ from typing import Any
 from airflow.sdk import dag, task
 
 # Core source folders currently supported by the ingestion pipeline.
-CORE_SOURCE_DIRECTORIES = ("customer_core", "accounts", "transactions", "fraud")
+CORE_SOURCE_DIRECTORIES = (
+    "customer_core",
+    "accounts",
+    "transactions",
+    "fraud",
+    "customer_service",
+)
 # File types accepted from the raw landing area.
 SUPPORTED_SUFFIXES = {".csv", ".json", ".jsonl"}
 

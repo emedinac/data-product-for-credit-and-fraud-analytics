@@ -10,6 +10,7 @@ from customer_data_product.domain.models import (
     BatchFile,
     Customer,
     FraudEvent,
+    Interaction,
     Transaction,
 )
 
@@ -43,6 +44,10 @@ class PostgresRepository:
             connection.execute(
                 "ALTER TABLE batches ADD COLUMN IF NOT EXISTS "
                 "snapshot_count INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute(
+                "ALTER TABLE customer_snapshots ADD COLUMN IF NOT EXISTS "
+                "interaction_count INTEGER NOT NULL DEFAULT 0"
             )
 
     def create_batch(self, batch_id: str, source: str) -> None:
@@ -196,10 +201,35 @@ class PostgresRepository:
             )
         return result.rowcount == 1
 
+    def save_interaction(self, record: Interaction, batch_id: str) -> bool:
+        with self._connect() as connection:
+            result = connection.execute(
+                """INSERT INTO interactions
+                   (interaction_id, customer_id, event_time, channel,
+                    interaction_type, resolution, batch_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (interaction_id) DO NOTHING""",
+                (
+                    record.interaction_id,
+                    record.customer_id,
+                    record.event_time,
+                    record.channel,
+                    record.interaction_type,
+                    record.resolution,
+                    batch_id,
+                ),
+            )
+        return result.rowcount == 1
+
     def publish_customer_snapshot(self, batch_id: str) -> int:
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO customer_snapshots
+                   (customer_id, status, customer_type, country, account_count,
+                    total_credit_limit, total_balance, transaction_count,
+                    transaction_amount, declined_transaction_count,
+                    fraud_event_count, confirmed_fraud_count, interaction_count,
+                    last_transaction_at, batch_id, updated_at)
                    SELECT c.customer_id, c.status, c.customer_type, c.country,
                           (SELECT count(*) FROM accounts a
                            WHERE a.customer_id = c.customer_id),
@@ -220,6 +250,8 @@ class PostgresRepository:
                           (SELECT count(*) FROM fraud_events f
                            WHERE f.customer_id = c.customer_id
                            AND f.confirmed),
+                          (SELECT count(*) FROM interactions i
+                           WHERE i.customer_id = c.customer_id),
                           (SELECT max(t.event_time) FROM transactions t
                            WHERE t.customer_id = c.customer_id),
                           %s, now()
@@ -234,6 +266,7 @@ class PostgresRepository:
                      declined_transaction_count = EXCLUDED.declined_transaction_count,
                      fraud_event_count = EXCLUDED.fraud_event_count,
                      confirmed_fraud_count = EXCLUDED.confirmed_fraud_count,
+                     interaction_count = EXCLUDED.interaction_count,
                      last_transaction_at = EXCLUDED.last_transaction_at,
                      batch_id = EXCLUDED.batch_id, updated_at = now()""",
                 (batch_id,),
@@ -263,6 +296,7 @@ class PostgresRepository:
             "confirmed_fraud_count": (
                 "SELECT count(*) AS value FROM fraud_events WHERE confirmed"
             ),
+            "interaction_count": "SELECT count(*) AS value FROM interactions",
             "quarantined_count": "SELECT count(*) AS value FROM quality_issues",
         }
         with self._connect() as connection:

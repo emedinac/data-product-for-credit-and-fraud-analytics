@@ -11,6 +11,7 @@ from customer_data_product.domain.models import (
     Account,
     Customer,
     FraudEvent,
+    Interaction,
     Transaction,
 )
 
@@ -225,6 +226,37 @@ def parse_fraud(path: Path) -> Iterator[tuple[int, FraudEvent | None, str | None
                 label(first(classification, "type", "event_type")),
                 label(first(classification, "severity")),
                 boolean(confirmed),
+            ),
+            None,
+        )
+
+
+def parse_interactions(
+    path: Path,
+) -> Iterator[tuple[int, Interaction | None, str | None]]:
+    for line_number, raw, error in jsonl(path):
+        if error or raw is None:
+            yield line_number, None, error
+            continue
+        nested = raw.get("interaction")
+        interaction_data = nested if isinstance(nested, dict) else {}
+        interaction_id = first(raw, "interaction_id", "interactionId")
+        customer_id = first(raw, "customer_id", "customerId")
+        event_time = parse_datetime(
+            first(raw, "timestamp", "event_time", "eventTimestamp")
+        )
+        if not interaction_id or not customer_id or event_time is None:
+            yield line_number, None, "missing or invalid interaction fields"
+            continue
+        yield (
+            line_number,
+            Interaction(
+                str(interaction_id),
+                str(customer_id),
+                event_time,
+                label(first(raw, "channel"), upper=True),
+                label(first(interaction_data, "type", "interaction_type")),
+                label(first(interaction_data, "resolution")),
             ),
             None,
         )

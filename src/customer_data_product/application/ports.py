@@ -8,6 +8,7 @@ from customer_data_product.domain.models import (
     BatchFile,
     Customer,
     FraudEvent,
+    Interaction,
     Transaction,
 )
 
@@ -46,6 +47,8 @@ class WarehouseRepository(Protocol):
     def save_transaction(self, record: Transaction, batch_id: str) -> bool: ...
 
     def save_fraud_event(self, record: FraudEvent, batch_id: str) -> bool: ...
+
+    def save_interaction(self, record: Interaction, batch_id: str) -> bool: ...
 
     def publish_customer_snapshot(self, batch_id: str) -> int: ...
 

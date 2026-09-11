@@ -5,6 +5,7 @@ from customer_data_product.adapters.processing.parser import (
     parse_accounts,
     parse_customers,
     parse_fraud,
+    parse_interactions,
     parse_transactions,
 )
 from customer_data_product.adapters.storage.local_filesystem import LocalObjectStorage
@@ -47,6 +48,9 @@ class LocalProcessor:
             elif "fraud" in name:
                 records = parse_fraud(path)
                 saver = self.repository.save_fraud_event
+            elif "interaction" in name:
+                records = parse_interactions(path)
+                saver = self.repository.save_interaction
             else:
                 self.repository.add_quality_issue(
                     batch_id,

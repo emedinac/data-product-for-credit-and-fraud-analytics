@@ -47,6 +47,16 @@ class FraudEvent:
 
 
 @dataclass(frozen=True)
+class Interaction:
+    interaction_id: str
+    customer_id: str
+    event_time: datetime
+    channel: str | None
+    interaction_type: str | None
+    resolution: str | None
+
+
+@dataclass(frozen=True)
 class BatchFile:
     batch_id: str
     file_id: str

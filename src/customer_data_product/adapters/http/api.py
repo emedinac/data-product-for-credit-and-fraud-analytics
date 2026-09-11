@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -45,7 +46,25 @@ class CustomerResponse(BaseModel):
     declined_transaction_count: int
     fraud_event_count: int
     confirmed_fraud_count: int
+    interaction_count: int
     last_transaction_at: datetime | None
+    batch_id: str
+    updated_at: datetime
+
+
+class LineageFileResponse(BaseModel):
+    file_id: str
+    filename: str
+    storage_key: str
+
+
+class LineageResponse(BaseModel):
+    batch_id: str
+    source: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    files: list[LineageFileResponse]
 
 
 class SummaryResponse(BaseModel):
@@ -54,6 +73,7 @@ class SummaryResponse(BaseModel):
     transaction_count: int
     fraud_event_count: int
     confirmed_fraud_count: int
+    interaction_count: int
     quarantined_count: int
     last_batch_id: str | None
     last_batch_status: str | None
@@ -153,6 +173,27 @@ def router(
         if batch is None:
             raise HTTPException(status_code=404, detail="batch not found")
         return BatchResponse(**batch)
+
+    @api.get("/batches/{batch_id}/lineage", response_model=LineageResponse)
+    def get_batch_lineage(batch_id: str) -> LineageResponse:
+        batch = repository.get_batch(batch_id)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        return LineageResponse(
+            batch_id=batch_id,
+            source=str(batch["source"]),
+            status=str(batch["status"]),
+            created_at=cast(datetime, batch["created_at"]),
+            updated_at=cast(datetime, batch["updated_at"]),
+            files=[
+                LineageFileResponse(
+                    file_id=file.file_id,
+                    filename=file.filename,
+                    storage_key=file.storage_key,
+                )
+                for file in repository.list_files(batch_id)
+            ],
+        )
 
     @api.get("/customers/{customer_id}", response_model=CustomerResponse)
     def get_customer(customer_id: str) -> CustomerResponse:
