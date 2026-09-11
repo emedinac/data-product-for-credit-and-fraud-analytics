@@ -1,15 +1,15 @@
 import csv
 import io
 import json
-import os
 from datetime import date, datetime, time, timezone
 from typing import Any
 
 import httpx
 import streamlit as st
 
+from customer_data_product.settings import get_settings
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+BACKEND_URL = get_settings().backend_url.rstrip("/")
 
 CUSTOMER_STATUSES = ["active", "inactive", "blocked", "closed"]
 CUSTOMER_TYPES = ["individual", "premium", "business"]
