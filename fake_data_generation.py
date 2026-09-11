@@ -157,12 +157,10 @@ import argparse
 import csv
 import json
 import random
-import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from faker import Faker
-
 
 # ============================================================
 # CONFIGURATION
@@ -528,7 +526,9 @@ def chance(probability):
 
 
 def random_id(prefix):
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+    # Use the seeded PRNG instead of uuid4(), otherwise --seed cannot fully
+    # reproduce a generated dataset.
+    return f"{prefix}_{random.getrandbits(48):012x}"
 
 
 def random_date(
@@ -756,7 +756,7 @@ def maybe_unknown_id(
             "",
         )
 
-        record[field] = f"UNKNOWN_{prefix}_" f"{uuid.uuid4().hex[:8]}"
+        record[field] = f"UNKNOWN_{prefix}_{random.getrandbits(32):08x}"
 
 
 def corrupt_record(
@@ -1392,13 +1392,13 @@ def generate_support_text(
         )
 
     return (
-        f"Ticket ID: {random_id("TICKET")}\n"
+        f"Ticket ID: {random_id('TICKET')}\n"
         f"Customer: {customer_id}\n"
         f"Created: {mixed_date(random_date())}\n"
         f"Channel: {random.choice(INTERACTION_CHANNELS)}\n"
-        f"Priority: {random.choice(["LOW", "MEDIUM", "HIGH", "URGENT"])}\n"
+        f"Priority: {random.choice(['LOW', 'MEDIUM', 'HIGH', 'URGENT'])}\n"
         f"Subject: {subject}\n"
-        f"Language: {random.choice(["en", "pt", "es", "fr"])}\n\n"
+        f"Language: {random.choice(['en', 'pt', 'es', 'fr'])}\n\n"
         f"{body}\n"
     )
 
@@ -1498,15 +1498,15 @@ def generate_application_log(
 
     if style == 4:
         return (
-            f"{timestamp.strftime("%Y-%m-%d %H:%M:%S")} "
+            f"{timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
             f"{level} {message} "
             f"cid={customer_id} "
-            f"request_id={random_id("REQ")}"
+            f"request_id={random_id('REQ')}"
         )
 
     if style == 5:
         return (
-            f"{timestamp.strftime("%d/%m/%Y %H:%M:%S")};"
+            f"{timestamp.strftime('%d/%m/%Y %H:%M:%S')};"
             f"{level};"
             f"{customer_id};"
             f"{message}"
@@ -1520,11 +1520,14 @@ def generate_application_log(
             f"msg='{message}'"
         )
 
+    service = random.choice(
+        ["payments", "fraud", "accounts", "auth", "customer"]
+    )
     return (
         f"{timestamp.isoformat()} "
         f"{level} "
-        f"service={random.choice(["payments", "fraud", "accounts", "auth", "customer"])} "
-        f"request={random_id("REQ")} "
+        f"service={service} "
+        f"request={random_id('REQ')} "
         f"customer={customer_id} "
         f"message={message}"
     )
@@ -2445,7 +2448,7 @@ def main():
     # TRANSACTIONS
     # ========================================================
 
-    print(f"Generating {distribution["transaction"]:,} transactions...")
+    print(f"Generating {distribution['transaction']:,} transactions...")
 
     transaction_files = []
 
@@ -2500,7 +2503,7 @@ def main():
     # PAYMENTS
     # ========================================================
 
-    print(f"Generating {distribution["payment"]:,} payments...")
+    print(f"Generating {distribution['payment']:,} payments...")
 
     payment_files = []
 
@@ -2542,7 +2545,7 @@ def main():
     # FRAUD
     # ========================================================
 
-    print(f"Generating {distribution["fraud_event"]:,} fraud events...")
+    print(f"Generating {distribution['fraud_event']:,} fraud events...")
 
     fraud_files = []
 
