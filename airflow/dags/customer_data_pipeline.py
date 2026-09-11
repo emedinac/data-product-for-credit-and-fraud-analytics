@@ -44,6 +44,7 @@ def _service() -> Any:
     start_date=datetime(2025, 1, 1),
     schedule="@daily",
     catchup=False,
+    max_active_runs=1,
     tags=["customer-data", "etl"],
 )
 def customer_data_product_pipeline() -> None:
@@ -52,7 +53,8 @@ def customer_data_product_pipeline() -> None:
         # Register a batch and copy supported raw files into the data lake.
         service = _service()
         batch_id = service.create("raw_dev")
-        raw_root = Path("/opt/project/raw_dev")
+        raw_root = Path(os.environ.get("RAW_ROOT", "/opt/project/raw_dev"))
+        uploaded = 0
         for directory in CORE_SOURCE_DIRECTORIES:
             for path in sorted((raw_root / directory).glob("*")):
                 if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES:
@@ -60,6 +62,9 @@ def customer_data_product_pipeline() -> None:
                         service.upload_file(
                             batch_id, path.name, iter(source.readline, b"")
                         )
+                    uploaded += 1
+        if uploaded == 0:
+            raise FileNotFoundError(f"no supported source files found in {raw_root}")
         return batch_id
 
     @task
