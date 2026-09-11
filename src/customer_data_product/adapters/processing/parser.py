@@ -108,9 +108,13 @@ def parse_customers(path: Path) -> Iterator[tuple[int, Customer | None, str | No
 
 
 def parse_accounts(path: Path) -> Iterator[tuple[int, Account | None, str | None]]:
-    with path.open(newline="", encoding="utf-8", errors="replace") as source:
-        for line_number, raw in enumerate(csv.DictReader(source), 2):
-            account_id = first(raw, "ACCOUNT_ID", "account_id")
+    with path.open(newline="", encoding="utf-8-sig", errors="replace") as source:
+        sample = source.readline()
+        source.seek(0)
+        delimiter = ";" if sample.count(";") > sample.count(",") else ","
+        reader = csv.DictReader(source, delimiter=delimiter)
+        for line_number, raw in enumerate(reader, 2):
+            account_id = first(raw, "ACCOUNT_ID", "account_id", "accountId")
             customer_id = first(raw, "CUSTOMER", "customer_id", "customerId")
             if not account_id or not customer_id:
                 yield line_number, None, "missing account or customer identifier"
@@ -120,9 +124,11 @@ def parse_accounts(path: Path) -> Iterator[tuple[int, Account | None, str | None
                 Account(
                     str(account_id),
                     str(customer_id),
-                    text(first(raw, "PRODUCT", "account_type")),
-                    parse_datetime(first(raw, "OPEN_DATE", "opening_date")),
-                    decimal(first(raw, "LIMIT", "credit_limit")),
+                    text(first(raw, "PRODUCT", "type", "account_type")),
+                    parse_datetime(
+                        first(raw, "OPEN_DATE", "opened_at", "opening_date")
+                    ),
+                    decimal(first(raw, "LIMIT", "creditLimit", "credit_limit")),
                     decimal(first(raw, "BALANCE", "current_balance")),
                     text(first(raw, "STATE", "account_status")),
                 ),
