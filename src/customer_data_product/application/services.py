@@ -35,3 +35,14 @@ class BatchService:
         self.publisher.publish(batch_id)
         result = self.processor.process_batch(batch_id)
         return result
+
+    def load(self, batch_id: str) -> dict[str, int]:
+        self.publisher.publish(batch_id)
+        return self.processor.process_batch(batch_id, publish_snapshot=False)
+
+    def publish_snapshot(self, batch_id: str) -> int:
+        snapshot_count = self.batches.publish_customer_snapshot(batch_id)
+        self.batches.update_status(
+            batch_id, "COMPLETED", snapshot_count=snapshot_count
+        )
+        return snapshot_count

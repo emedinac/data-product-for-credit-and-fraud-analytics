@@ -35,6 +35,8 @@ class BatchRepository(Protocol):
 
     def list_files(self, batch_id: str) -> list[BatchFile]: ...
 
+    def publish_customer_snapshot(self, batch_id: str) -> int: ...
+
 
 class WarehouseRepository(Protocol):
     def save_customer(self, record: Customer, batch_id: str) -> bool: ...
@@ -53,4 +55,6 @@ class WarehouseRepository(Protocol):
 
 
 class DataProcessor(Protocol):
-    def process_batch(self, batch_id: str) -> dict[str, int]: ...
+    def process_batch(
+        self, batch_id: str, *, publish_snapshot: bool = True
+    ) -> dict[str, int]: ...

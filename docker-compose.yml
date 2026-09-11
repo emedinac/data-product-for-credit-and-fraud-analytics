@@ -10,6 +10,24 @@ services:
     volumes:
       - customer_product_postgres:/var/lib/postgresql/data
 
+  airflow:
+    build: ./airflow
+    command: standalone
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      DATABASE_URL: postgresql://customer:customer@postgres:5432/customer_product
+      LAKE_ROOT: /opt/project/lake
+      PYTHONPATH: /opt/project/src
+    ports:
+      - "8080:8080"
+    volumes:
+      - airflow_home:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags
+      - .:/opt/project
+    depends_on:
+      - postgres
+
 volumes:
   customer_product_postgres:
-
+  airflow_home:

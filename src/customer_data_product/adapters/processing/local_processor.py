@@ -17,7 +17,9 @@ class LocalProcessor:
         self.storage = storage
         self.repository = repository
 
-    def process_batch(self, batch_id: str) -> dict[str, int]:
+    def process_batch(
+        self, batch_id: str, *, publish_snapshot: bool = True
+    ) -> dict[str, int]:
         batch = self.repository.get_batch(batch_id)
         if batch is None:
             raise ValueError("batch not found")
@@ -79,6 +81,12 @@ class LocalProcessor:
                     counts["quarantined_count"] += 1
                     continue
                 counts["accepted_count" if inserted else "duplicate_count"] += 1
-        counts["snapshot_count"] = self.repository.publish_customer_snapshot(batch_id)
-        self.repository.update_status(batch_id, "COMPLETED", **counts)
+        if publish_snapshot:
+            counts["snapshot_count"] = self.repository.publish_customer_snapshot(
+                batch_id
+            )
+            status = "COMPLETED"
+        else:
+            status = "LOADED"
+        self.repository.update_status(batch_id, status, **counts)
         return counts

@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from customer_data_product.adapters.processing.normalization import normalize_name
 from customer_data_product.domain.models import (
     Account,
     Customer,
@@ -17,9 +18,15 @@ from customer_data_product.domain.models import (
 def first(record: Any, *names: str) -> Any:
     if not isinstance(record, Mapping):
         return None
+    normalized = {
+        normalize_name(key): value for key, value in record.items()
+    }
     for name in names:
         if record.get(name) not in (None, "", "NULL", "N/A"):
             return record[name]
+        value = normalized.get(normalize_name(name))
+        if value not in (None, "", "NULL", "N/A"):
+            return value
     return None
 
 
@@ -28,6 +35,11 @@ def text(value: Any, *, upper: bool = False) -> str | None:
         return None
     result = str(value).strip()
     return result.upper() if upper else result.lower()
+
+
+def label(value: Any, *, upper: bool = False) -> str | None:
+    result = normalize_name(value)
+    return result.upper() if result is not None and upper else result
 
 
 def boolean(value: Any) -> bool:
@@ -98,8 +110,8 @@ def parse_customers(path: Path) -> Iterator[tuple[int, Customer | None, str | No
             line_number,
             Customer(
                 str(customer_id),
-                text(first(raw, "status", "state")),
-                text(first(raw, "customer_type", "customerType")),
+                label(first(raw, "status", "state")),
+                label(first(raw, "customer_type", "customerType")),
                 text(first(raw, "country", "country_code"), upper=True),
                 parse_datetime(first(raw, "registered_at", "registration_date")),
             ),
@@ -124,13 +136,13 @@ def parse_accounts(path: Path) -> Iterator[tuple[int, Account | None, str | None
                 Account(
                     str(account_id),
                     str(customer_id),
-                    text(first(raw, "PRODUCT", "type", "account_type")),
+                    label(first(raw, "PRODUCT", "type", "account_type")),
                     parse_datetime(
                         first(raw, "OPEN_DATE", "opened_at", "opening_date")
                     ),
                     decimal(first(raw, "LIMIT", "creditLimit", "credit_limit")),
                     decimal(first(raw, "BALANCE", "current_balance")),
-                    text(first(raw, "STATE", "account_status")),
+                    label(first(raw, "STATE", "account_status")),
                 ),
                 None,
             )
@@ -173,12 +185,12 @@ def parse_transactions(
                 str(account_id),
                 event_time,
                 amount,
-                text(
+                label(
                     first(amount_fields, "currency", "ccy", "currency_code"),
                     upper=True,
                 ),
-                text(first(nested, "type", "transaction_type")),
-                text(first(raw, "status", "state")),
+                label(first(nested, "type", "transaction_type")),
+                label(first(raw, "status", "state")),
             ),
             None,
         )
@@ -210,8 +222,8 @@ def parse_fraud(path: Path) -> Iterator[tuple[int, FraudEvent | None, str | None
                 str(customer_id),
                 first(raw, "transaction_id", "transactionId"),
                 event_time,
-                text(first(classification, "type", "event_type")),
-                text(first(classification, "severity")),
+                label(first(classification, "type", "event_type")),
+                label(first(classification, "severity")),
                 boolean(confirmed),
             ),
             None,
