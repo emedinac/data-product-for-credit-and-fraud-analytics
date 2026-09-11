@@ -1,5 +1,6 @@
 raw/
 raw_dev/
+lake/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
