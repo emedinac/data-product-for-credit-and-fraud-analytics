@@ -52,3 +52,11 @@ class BatchFile:
     file_id: str
     filename: str
     storage_key: str
+
+
+@dataclass(frozen=True)
+class GroundTruthLabel:
+    scenario_id: str
+    label: str
+    subtype: str | None
+    confirmed: bool

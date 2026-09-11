@@ -9,6 +9,8 @@ class Settings(BaseSettings):
         "postgresql://customer:customer@localhost:5432/customer_product"
     )
     lake_root: Path = Path("lake")
+    raw_root: Path = Path("raw_dev")
+    enable_ground_truth: bool = False
     port: int = 8000
     backend_url: str = "http://localhost:8000"
 

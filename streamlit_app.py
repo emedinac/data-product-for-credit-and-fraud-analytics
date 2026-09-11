@@ -10,6 +10,7 @@ import streamlit as st
 from customer_data_product.settings import get_settings
 
 BACKEND_URL = get_settings().backend_url.rstrip("/")
+ENABLE_GROUND_TRUTH = get_settings().enable_ground_truth
 
 CUSTOMER_STATUSES = ["active", "inactive", "blocked", "closed"]
 CUSTOMER_TYPES = ["individual", "premium", "business"]
@@ -244,6 +245,33 @@ def render_dashboard() -> None:
         )
 
 
+def render_ground_truth() -> None:
+    st.subheader("GTs")
+    try:
+        ground_truth = request("GET", "/v1/ground-truth")
+    except RuntimeError as exc:
+        st.error(str(exc))
+        return
+
+    st.info(ground_truth["description"])
+    st.caption(f"Source: {ground_truth['source']}")
+    columns = st.columns(3)
+    columns[0].metric("Total labels", ground_truth["total"])
+    columns[1].metric("Confirmed", ground_truth["confirmed"])
+    columns[2].metric("Label types", len(ground_truth["labels_by_type"]))
+
+    left, right = st.columns(2)
+    with left:
+        st.caption("Labels")
+        st.bar_chart(ground_truth["labels_by_type"])
+    with right:
+        st.caption("Fraud/anomaly subtypes")
+        st.bar_chart(ground_truth["subtypes"])
+
+    st.caption("Sample ground-truth records")
+    st.dataframe(ground_truth["records"][:25], use_container_width=True)
+
+
 st.set_page_config(page_title="Customer Data Product", layout="wide")
 st.title("Customer Data Product")
 st.caption(f"Backend: {BACKEND_URL}")
@@ -251,6 +279,9 @@ st.caption(f"Backend: {BACKEND_URL}")
 if st.button("Refresh dashboard"):
     st.rerun()
 
+if ENABLE_GROUND_TRUTH:
+    render_ground_truth()
+    st.divider()
 render_dashboard()
 st.divider()
 render_observation_form()

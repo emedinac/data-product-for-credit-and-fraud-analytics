@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from customer_data_product.adapters.events import LocalEventPublisher
+from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
 from customer_data_product.adapters.http.api import router
 from customer_data_product.adapters.persistence.postgres import PostgresRepository
 from customer_data_product.adapters.processing.local_processor import LocalProcessor
@@ -18,7 +19,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     publisher = LocalEventPublisher()
     service = BatchService(repository, storage, publisher, processor)
     app = FastAPI(title="Customer Data Product", version="0.1.0")
-    app.include_router(router(service, repository))
+    app.include_router(
+        router(
+            service,
+            repository,
+            LocalGroundTruthReader(settings.raw_root),
+            enable_ground_truth=settings.enable_ground_truth,
+        )
+    )
 
     @app.get("/health")
     def health() -> dict[str, str]:

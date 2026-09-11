@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
 from customer_data_product.adapters.persistence.postgres import PostgresRepository
 from customer_data_product.application.services import BatchService
 
@@ -68,7 +69,29 @@ class SummaryDistributionsResponse(BaseModel):
     transactions_by_status: list[DistributionItem]
 
 
-def router(service: BatchService, repository: PostgresRepository) -> APIRouter:
+class GroundTruthRecord(BaseModel):
+    scenario_id: str
+    label: str
+    subtype: str | None
+    confirmed: bool
+
+
+class GroundTruthResponse(BaseModel):
+    source: str
+    description: str
+    total: int
+    confirmed: int
+    labels_by_type: dict[str, int]
+    subtypes: dict[str, int]
+    records: list[GroundTruthRecord]
+
+
+def router(
+    service: BatchService,
+    repository: PostgresRepository,
+    ground_truth: LocalGroundTruthReader,
+    enable_ground_truth: bool = False,
+) -> APIRouter:
     api = APIRouter(prefix="/v1")
 
     @api.post("/batches", response_model=BatchResponse, status_code=201)
@@ -137,5 +160,23 @@ def router(service: BatchService, repository: PostgresRepository) -> APIRouter:
     )
     def get_summary_distributions() -> SummaryDistributionsResponse:
         return SummaryDistributionsResponse(**repository.get_distributions())
+
+    if enable_ground_truth:
+
+        @api.get("/ground-truth", response_model=GroundTruthResponse)
+        def get_ground_truth() -> GroundTruthResponse:
+            report = ground_truth.read()
+            return GroundTruthResponse(
+                source=report.source,
+                description=report.description,
+                total=report.total,
+                confirmed=report.confirmed,
+                labels_by_type=report.labels_by_type,
+                subtypes=report.subtypes,
+                records=[
+                    GroundTruthRecord(**record.__dict__)
+                    for record in report.records
+                ],
+            )
 
     return api
