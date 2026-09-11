@@ -60,3 +60,4 @@ class GroundTruthLabel:
     label: str
     subtype: str | None
     confirmed: bool
+    evidence_found: bool

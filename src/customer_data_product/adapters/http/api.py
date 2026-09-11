@@ -57,6 +57,9 @@ class SummaryResponse(BaseModel):
     quarantined_count: int
     last_batch_id: str | None
     last_batch_status: str | None
+    latest_accepted_count: int
+    latest_duplicate_count: int
+    latest_quarantined_count: int
 
 
 class DistributionItem(BaseModel):
@@ -74,6 +77,7 @@ class GroundTruthRecord(BaseModel):
     label: str
     subtype: str | None
     confirmed: bool
+    evidence_found: bool
 
 
 class GroundTruthResponse(BaseModel):
@@ -81,9 +85,18 @@ class GroundTruthResponse(BaseModel):
     description: str
     total: int
     confirmed: int
+    evidence_found: int
+    evidence_missing: int
     labels_by_type: dict[str, int]
     subtypes: dict[str, int]
     records: list[GroundTruthRecord]
+
+
+class QualityIssueResponse(BaseModel):
+    filename: str
+    line_number: int | None
+    issue_type: str
+    detail: str
 
 
 def router(
@@ -161,6 +174,22 @@ def router(
     def get_summary_distributions() -> SummaryDistributionsResponse:
         return SummaryDistributionsResponse(**repository.get_distributions())
 
+    @api.get("/quality", response_model=list[QualityIssueResponse])
+    def get_quality(
+        filename: str | None = None,
+        issue_type: str | None = None,
+        limit: int = 100,
+    ) -> list[QualityIssueResponse]:
+        safe_limit = min(max(limit, 1), 500)
+        return [
+            QualityIssueResponse(**issue)
+            for issue in repository.get_quality_issues(
+                filename=filename,
+                issue_type=issue_type,
+                limit=safe_limit,
+            )
+        ]
+
     if enable_ground_truth:
 
         @api.get("/ground-truth", response_model=GroundTruthResponse)
@@ -171,6 +200,8 @@ def router(
                 description=report.description,
                 total=report.total,
                 confirmed=report.confirmed,
+                evidence_found=report.evidence_found,
+                evidence_missing=report.evidence_missing,
                 labels_by_type=report.labels_by_type,
                 subtypes=report.subtypes,
                 records=[

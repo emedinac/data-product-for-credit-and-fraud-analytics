@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+from collections import Counter
 from datetime import date, datetime, time, timezone
 from typing import Any
 
@@ -209,6 +210,7 @@ def render_dashboard() -> None:
     try:
         summary = request("GET", "/v1/summary")
         distributions = request("GET", "/v1/summary/distributions")
+        quality = request("GET", "/v1/quality?limit=500")
     except RuntimeError as exc:
         st.error(str(exc))
         return
@@ -220,7 +222,9 @@ def render_dashboard() -> None:
         ("Transactions", summary["transaction_count"]),
         ("Fraud events", summary["fraud_event_count"]),
         ("Confirmed fraud", summary["confirmed_fraud_count"]),
-        ("Quarantined", summary["quarantined_count"]),
+        ("Accepted / loaded", summary["latest_accepted_count"]),
+        ("Duplicates", summary["latest_duplicate_count"]),
+        ("Quarantined", summary["latest_quarantined_count"]),
     ]
     columns = st.columns(3)
     for index, (label, value) in enumerate(metrics):
@@ -244,6 +248,22 @@ def render_dashboard() -> None:
             }
         )
 
+    st.subheader("Data ingestion status")
+    quality_types = ["All"] + sorted(
+        {issue["issue_type"] for issue in quality}
+    )
+    selected_type = st.selectbox("Quality status", quality_types)
+    selected_quality = (
+        quality
+        if selected_type == "All"
+        else [issue for issue in quality if issue["issue_type"] == selected_type]
+    )
+    st.caption(
+        "Accepted means loaded into the product. Quarantined means rejected "
+        "for validation or reference errors. Duplicates were already loaded."
+    )
+    st.dataframe(selected_quality, width="stretch")
+
 
 def render_ground_truth() -> None:
     st.subheader("GTs")
@@ -256,20 +276,59 @@ def render_ground_truth() -> None:
     st.info(ground_truth["description"])
     st.caption(f"Source: {ground_truth['source']}")
     columns = st.columns(3)
-    columns[0].metric("Total labels", ground_truth["total"])
-    columns[1].metric("Confirmed", ground_truth["confirmed"])
-    columns[2].metric("Label types", len(ground_truth["labels_by_type"]))
+    columns[0].metric("Total cases", ground_truth["total"])
+    columns[1].metric("Found", ground_truth["evidence_found"])
+    columns[2].metric("Missing", ground_truth["evidence_missing"])
+
+    records = ground_truth["records"]
+    evidence_scope = st.selectbox(
+        "Cases to display",
+        ["Missing", "Found", "All"],
+        help="This selection controls the charts and samples below.",
+    )
+    if evidence_scope == "Missing":
+        records = [record for record in records if not record["evidence_found"]]
+    elif evidence_scope == "Found":
+        records = [record for record in records if record["evidence_found"]]
+
+    labels_by_type = dict(Counter(record["label"] for record in records))
+    subtypes = dict(
+        Counter(record["subtype"] for record in records if record["subtype"])
+    )
 
     left, right = st.columns(2)
     with left:
-        st.caption("Labels")
-        st.bar_chart(ground_truth["labels_by_type"])
+        st.caption(f"Labels — {evidence_scope}")
+        st.bar_chart(labels_by_type)
     with right:
-        st.caption("Fraud/anomaly subtypes")
-        st.bar_chart(ground_truth["subtypes"])
+        st.caption(f"Fraud/anomaly subtypes — {evidence_scope}")
+        st.bar_chart(subtypes)
 
-    st.caption("Sample ground-truth records")
-    st.dataframe(ground_truth["records"][:25], use_container_width=True)
+    st.caption("Find ground-truth cases")
+    subtype_options = sorted(
+        {record["subtype"] for record in records if record["subtype"]}
+    )
+    subtype = st.selectbox("Subtype", ["All"] + subtype_options)
+    search = st.text_input("Search scenario ID or label")
+    if subtype != "All":
+        records = [record for record in records if record["subtype"] == subtype]
+    if search:
+        term = search.lower()
+        records = [
+            record
+            for record in records
+            if term in record["scenario_id"].lower()
+            or term in record["label"].lower()
+        ]
+    display_records = []
+    for record in records:
+        display_record = dict(record)
+        display_record["status"] = (
+            "Found" if display_record.pop("evidence_found") else "Missing"
+        )
+        display_records.append(display_record)
+    st.write(f"Matching cases: {len(records)}")
+    st.dataframe(display_records, width="stretch")
 
 
 st.set_page_config(page_title="Customer Data Product", layout="wide")

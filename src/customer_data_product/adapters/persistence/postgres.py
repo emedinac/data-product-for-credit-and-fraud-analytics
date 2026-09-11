@@ -271,12 +271,46 @@ class PostgresRepository:
                 row = connection.execute(query).fetchone()
                 values[name] = int(row["value"]) if row is not None else 0
             latest = connection.execute(
-                """SELECT batch_id, status FROM batches
+                """SELECT batch_id, status, accepted_count, duplicate_count,
+                          quarantined_count FROM batches
                    ORDER BY updated_at DESC LIMIT 1"""
             ).fetchone()
         values["last_batch_id"] = latest["batch_id"] if latest else None
         values["last_batch_status"] = latest["status"] if latest else None
+        values["latest_accepted_count"] = (
+            int(latest["accepted_count"]) if latest else 0
+        )
+        values["latest_duplicate_count"] = (
+            int(latest["duplicate_count"]) if latest else 0
+        )
+        values["latest_quarantined_count"] = (
+            int(latest["quarantined_count"]) if latest else 0
+        )
         return values
+
+    def get_quality_issues(
+        self,
+        filename: str | None = None,
+        issue_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        clauses: list[str] = []
+        values: list[object] = []
+        if filename:
+            clauses.append("filename = %s")
+            values.append(filename)
+        if issue_type:
+            clauses.append("issue_type = %s")
+            values.append(issue_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT filename, line_number, issue_type, detail "
+                f"FROM quality_issues {where} ORDER BY id LIMIT %s",
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_distributions(self) -> dict[str, list[dict[str, object]]]:
         with self._connect() as connection:
