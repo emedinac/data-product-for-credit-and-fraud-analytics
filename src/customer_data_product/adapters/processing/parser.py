@@ -141,10 +141,9 @@ def parse_transactions(
         nested: dict[str, Any] = (
             transaction_data if isinstance(transaction_data, dict) else {}
         )
-        amount = decimal(first(nested, "amount"))
-        amount_data = nested.get("amount")
-        if not isinstance(amount_data, dict):
-            amount_data = {}
+        amount_data = first(nested, "amount")
+        amount = decimal(amount_data)
+        amount_fields = amount_data if isinstance(amount_data, Mapping) else {}
         transaction_id = first(raw, "transaction_id", "transactionId")
         customer_id = first(raw, "customer_id", "customerId")
         account_id = first(raw, "account_id", "accountId")
@@ -169,7 +168,7 @@ def parse_transactions(
                 event_time,
                 amount,
                 text(
-                    first(amount_data, "currency", "ccy", "currency_code"),
+                    first(amount_fields, "currency", "ccy", "currency_code"),
                     upper=True,
                 ),
                 text(first(nested, "type", "transaction_type")),

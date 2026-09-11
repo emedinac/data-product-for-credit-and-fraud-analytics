@@ -266,10 +266,10 @@ class PostgresRepository:
             "quarantined_count": "SELECT count(*) AS value FROM quality_issues",
         }
         with self._connect() as connection:
-            values = {
-                name: int(connection.execute(query).fetchone()["value"])
-                for name, query in queries.items()
-            }
+            values: dict[str, object] = {}
+            for name, query in queries.items():
+                row = connection.execute(query).fetchone()
+                values[name] = int(row["value"]) if row is not None else 0
             latest = connection.execute(
                 """SELECT batch_id, status FROM batches
                    ORDER BY updated_at DESC LIMIT 1"""

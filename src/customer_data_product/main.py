@@ -1,6 +1,3 @@
-import os
-from pathlib import Path
-
 from fastapi import FastAPI
 
 from customer_data_product.adapters.events import LocalEventPublisher
@@ -9,16 +6,13 @@ from customer_data_product.adapters.persistence.postgres import PostgresReposito
 from customer_data_product.adapters.processing.local_processor import LocalProcessor
 from customer_data_product.adapters.storage.local_filesystem import LocalObjectStorage
 from customer_data_product.application.services import BatchService
+from customer_data_product.settings import Settings, get_settings
 
 
-def create_app() -> FastAPI:
-    storage = LocalObjectStorage(Path(os.getenv("LAKE_ROOT", "lake")))
-    repository = PostgresRepository(
-        os.getenv(
-            "DATABASE_URL",
-            "postgresql://customer:customer@localhost:5432/customer_product",
-        )
-    )
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
+    storage = LocalObjectStorage(settings.lake_root)
+    repository = PostgresRepository(settings.database_url)
     repository.initialize()
     processor = LocalProcessor(storage, repository)
     publisher = LocalEventPublisher()
@@ -39,8 +33,9 @@ app = create_app()
 def run() -> None:
     import uvicorn
 
+    settings = get_settings()
     uvicorn.run(
         "customer_data_product.main:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "8000")),
+        port=settings.port,
     )
