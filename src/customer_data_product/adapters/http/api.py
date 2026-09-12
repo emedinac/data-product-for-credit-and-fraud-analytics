@@ -107,6 +107,10 @@ class GroundTruthRecord(BaseModel):
     transaction_ids: list[str] = Field(default_factory=list)
     event_types: list[str] = Field(default_factory=list)
     evidence_records: list[dict[str, object]] = Field(default_factory=list)
+    explanation: str
+    predicted_label: str = "not_fraud"
+    classification_result: str = "correct"
+    misclassified: bool = False
 
 
 class GroundTruthResponse(BaseModel):

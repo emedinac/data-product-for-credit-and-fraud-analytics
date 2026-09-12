@@ -82,3 +82,7 @@ class GroundTruthLabel:
     transaction_ids: tuple[str, ...] = ()
     event_types: tuple[str, ...] = ()
     evidence_records: tuple[dict[str, object], ...] = ()
+    explanation: str = ""
+    predicted_label: str = "not_fraud"
+    classification_result: str = "correct"
+    misclassified: bool = False
