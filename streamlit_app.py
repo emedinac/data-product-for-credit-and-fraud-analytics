@@ -59,8 +59,11 @@ def load_ground_truth(raw_root: Path) -> dict[str, Any]:
 
 def backend_get(path: str) -> tuple[Any | None, str | None]:
     backend_url = APP_SETTINGS.backend_url.rstrip("/")
-    api_key = APP_SETTINGS.backend_api_key or APP_SETTINGS.api_key
-    headers = {"X-API-Key": api_key} if api_key else {}
+    headers = (
+        {"Authorization": f"Bearer {APP_SETTINGS.backend_token}"}
+        if APP_SETTINGS.backend_token
+        else {}
+    )
     try:
         response = httpx.get(f"{backend_url}{path}", headers=headers, timeout=5)
         response.raise_for_status()
@@ -146,9 +149,7 @@ def render_production_dashboard() -> None:
     status_bottom = st.columns(2)
     status_bottom[0].metric(
         "Access control",
-        "API key configured"
-        if APP_SETTINGS.backend_api_key or APP_SETTINGS.api_key
-        else "Not configured",
+        "OAuth token configured" if APP_SETTINGS.backend_token else "Not configured",
     )
     status_bottom[1].metric(
         "Batch status", quality.get("batch_status", "UNKNOWN") if quality else "UNKNOWN"
