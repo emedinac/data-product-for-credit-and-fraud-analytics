@@ -127,6 +127,13 @@ def observation_file(kind: str, values: dict[str, Any]) -> tuple[str, bytes, str
     )
 
 
+def category_chart(values: dict[str, int]) -> list[dict[str, int | str]]:
+    return [
+        {"category": category, "cases": count}
+        for category, count in values.items()
+    ]
+
+
 def submit_observation(kind: str, values: dict[str, Any]) -> dict[str, Any]:
     batch = request(
         "POST",
@@ -249,18 +256,30 @@ def render_dashboard() -> None:
     with left:
         st.caption("Customers by status")
         st.bar_chart(
-            {
-                item["label"]: item["count"]
-                for item in distributions["customers_by_status"]
-            }
+            category_chart(
+                {
+                    item["label"]: item["count"]
+                    for item in distributions["customers_by_status"]
+                }
+            ),
+            x="category",
+            y="cases",
+            sort="-cases",
+            height=360,
         )
     with right:
         st.caption("Transactions by status")
         st.bar_chart(
-            {
-                item["label"]: item["count"]
-                for item in distributions["transactions_by_status"]
-            }
+            category_chart(
+                {
+                    item["label"]: item["count"]
+                    for item in distributions["transactions_by_status"]
+                }
+            ),
+            x="category",
+            y="cases",
+            sort="-cases",
+            height=360,
         )
 
     st.subheader("Data ingestion status")
@@ -290,10 +309,14 @@ def render_ground_truth() -> None:
 
     st.info(ground_truth["description"])
     st.caption(f"Source: {ground_truth['source']}")
-    columns = st.columns(3)
+    columns = st.columns(4)
     columns[0].metric("Total cases", ground_truth["total"])
     columns[1].metric("Found", ground_truth["evidence_found"])
     columns[2].metric("Missing", ground_truth["evidence_missing"])
+    columns[3].metric(
+        "Misclassified",
+        sum(record["misclassified"] for record in ground_truth["records"]),
+    )
 
     records = ground_truth["records"]
     fraud_only = st.checkbox(
@@ -303,13 +326,19 @@ def render_ground_truth() -> None:
     )
     if fraud_only:
         records = [record for record in records if record["label"] == "fraud"]
+    st.caption(
+        "Prediction is a baseline heuristic: evidence with a confirmed "
+        "fraud_event is predicted as fraud."
+    )
     evidence_scope = st.selectbox(
         "Cases to display",
-        ["Missing", "Found", "All"],
+        ["Found", "All", "Misclassified", "Missing"],
         help="This selection controls the charts and samples below.",
     )
     if evidence_scope == "Missing":
         records = [record for record in records if not record["evidence_found"]]
+    elif evidence_scope == "Misclassified":
+        records = [record for record in records if record["misclassified"]]
     elif evidence_scope == "Found":
         records = [record for record in records if record["evidence_found"]]
 
@@ -317,14 +346,25 @@ def render_ground_truth() -> None:
     subtypes = dict(
         Counter(record["subtype"] for record in records if record["subtype"])
     )
-
     left, right = st.columns(2)
     with left:
         st.caption(f"Labels — {evidence_scope}")
-        st.bar_chart(labels_by_type)
+        st.bar_chart(
+            category_chart(labels_by_type),
+            x="category",
+            y="cases",
+            sort="-cases",
+            height=360,
+        )
     with right:
         st.caption(f"Fraud/anomaly subtypes — {evidence_scope}")
-        st.bar_chart(subtypes)
+        st.bar_chart(
+            category_chart(subtypes),
+            x="category",
+            y="cases",
+            sort="-cases",
+            height=360,
+        )
 
     st.caption("Find ground-truth cases")
     subtype_options = sorted(
@@ -353,6 +393,10 @@ def render_ground_truth() -> None:
             "confirmed_fraud": record["confirmed"],
             "evidence_found": record["evidence_found"],
             "event_types": ", ".join(record.get("event_types", [])),
+            "explanation": record["explanation"],
+            "predicted_label": record["predicted_label"],
+            "classification_result": record["classification_result"],
+            "misclassified": record["misclassified"],
         }
         display_records.append(display_record)
     st.write(f"Matching cases: {len(records)}")
@@ -379,6 +423,20 @@ def render_ground_truth() -> None:
 
 
 st.set_page_config(page_title="Customer Data Product", layout="wide")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stMetric"] {
+        min-height: 108px;
+    }
+    div[data-testid="stMetricLabel"] {
+        min-height: 2.5rem;
+        align-items: flex-start;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 st.title("Customer Data Product")
 st.caption(f"Backend: {BACKEND_URL}")
 
