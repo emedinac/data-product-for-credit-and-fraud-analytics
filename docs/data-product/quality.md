@@ -7,6 +7,16 @@ Current checks cover:
 - duplicate identifiers through database uniqueness constraints;
 - referential integrity through database foreign keys; and
 - source naming and categorical-value normalization.
-Batch responses report accepted, duplicate, quarantined, and snapshot counts. The quality gate is shared by the API and Airflow and stops publication when any default threshold is breached: quarantine and duplicate rates are at most 5%, referential-integrity failures are zero, required-field completeness is at least 99%, batch volume may change by at most 50%, and the newest source event must be no more than 24 hours old at processing time. Every threshold is configurable through the matching environment variable in `Settings`.
+Batch responses report accepted, duplicate, quarantined, and snapshot counts. The quality gate is shared by the API and Airflow and stops publication when any default threshold is breached: quarantine and duplicate rates are at most 5%, referential-integrity failures are zero, required-field completeness is at least 99%, batch volume may change by at most 50%, and the newest source event must be no more than 24 hours old at processing time. Future-dated source events fail as `FUTURE_EVENT_TIME`. Every threshold is configurable through the matching environment variable in `Settings`.
 
-`GET /v1/quality/summary` returns the latest batch's rates, source/event freshness, duration, volume change, status, and failure reasons. Processing also emits JSON structured metrics for batch duration, record counts, freshness, quality failures, and processing failures. Airflow emits alert logs for task failures, quality-gate failures, and freshness breaches; these logs can be routed to an email or log-based alerting backend without changing the pipeline code. 
+`GET /v1/quality/summary` returns the latest batch's rates, source/event freshness, duration, volume change, status, and failure reasons. Processing also emits JSON structured metrics for batch duration, record counts, freshness, quality failures, and processing failures. Airflow emits alert logs for task failures, quality-gate failures, and freshness breaches; these logs can be routed to an email or log-based alerting backend without changing the pipeline code.
+
+The generator also writes `metadata/quality_ground_truth.json` for the core
+files loaded by the demo. The Ground truth panel compares its expected
+record-quality counts with the latest observed batch.
+
+Failed quality gates do not discard the batch or return an ingestion error from
+the API. The batch is marked `COMPLETED_WITH_QUALITY_ISSUES`, its
+`quality_status` is `FAILED`, its customer snapshot is not published, and
+quarantined records remain available through
+`GET /v1/quality?batch_id=<batch_id>` for inspection.
