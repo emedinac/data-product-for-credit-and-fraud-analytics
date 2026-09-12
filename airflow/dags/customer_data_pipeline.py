@@ -1,11 +1,24 @@
 """Local Airflow pipeline for the customer data product."""
 
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from airflow.sdk import dag, task
+
+logger = logging.getLogger(__name__)
+
+
+def _failure_alert(context: dict[str, Any]) -> None:
+    task = context.get("task_instance")
+    logger.error(
+        "AIRFLOW_ALERT task failure dag_id=%s task_id=%s run_id=%s",
+        getattr(task, "dag_id", None),
+        getattr(task, "task_id", None),
+        getattr(task, "run_id", None),
+    )
 
 # Core source folders currently supported by the ingestion pipeline.
 CORE_SOURCE_DIRECTORIES = (
@@ -28,6 +41,7 @@ def _service() -> Any:
         LocalObjectStorage,
     )
     from customer_data_product.application.services import BatchService
+    from customer_data_product.settings import Settings
 
     storage = LocalObjectStorage(Path(os.environ.get("LAKE_ROOT", "/opt/project/lake")))
     repository = PostgresRepository(
@@ -42,6 +56,7 @@ def _service() -> Any:
         storage,
         LocalEventPublisher(),
         LocalProcessor(storage, repository),
+        Settings().quality_thresholds,
     )
 
 
@@ -51,6 +66,7 @@ def _service() -> Any:
     schedule="@daily",
     catchup=False,
     max_active_runs=1,
+    on_failure_callback=_failure_alert,
     tags=["customer-data", "etl"],
 )
 def customer_data_product_pipeline() -> None:
@@ -74,29 +90,30 @@ def customer_data_product_pipeline() -> None:
         return batch_id
 
     @task
-    def load_warehouse(batch_id: str) -> dict[str, int]:
+    def load_warehouse(batch_id: str) -> dict[str, object]:
         # Parse, normalize, validate, and load records into warehouse tables.
         return _service().load(batch_id)
 
     @task
-    def quality_gate(batch_id: str, result: dict[str, int]) -> str:
-        # Thresholds are configurable; 1.0 preserves the prototype behavior.
-        total = sum(
-            result[key]
-            for key in ("accepted_count", "duplicate_count", "quarantined_count")
-        )
-        quarantine_rate = (
-            result["quarantined_count"] / total if total else 1.0
-        )
-        duplicate_rate = result["duplicate_count"] / total if total else 0.0
-        max_quarantine_rate = float(os.environ.get("MAX_QUARANTINE_RATE", "1.0"))
-        max_duplicate_rate = float(os.environ.get("MAX_DUPLICATE_RATE", "1.0"))
-        if result["accepted_count"] == 0 and result["quarantined_count"] > 0:
-            raise ValueError("batch contained no accepted records")
-        if quarantine_rate > max_quarantine_rate:
-            raise ValueError(f"quarantine rate {quarantine_rate:.2%} exceeds threshold")
-        if duplicate_rate > max_duplicate_rate:
-            raise ValueError(f"duplicate rate {duplicate_rate:.2%} exceeds threshold")
+    def quality_gate(batch_id: str, result: dict[str, object]) -> str:
+        service = _service()
+        assessment = service.evaluate_quality(batch_id, result)
+        if "FRESHNESS" in assessment.failures:
+            logger.error(
+                "AIRFLOW_ALERT freshness threshold breached batch_id=%s "
+                "freshness_seconds=%s",
+                batch_id,
+                assessment.freshness_seconds,
+            )
+        if assessment.status == "FAILED":
+            logger.error(
+                "AIRFLOW_ALERT quality gate failed batch_id=%s reasons=%s",
+                batch_id,
+                assessment.failures,
+            )
+            raise ValueError(
+                "quality gate failed: " + ", ".join(assessment.failures)
+            )
         return batch_id
 
     @task
