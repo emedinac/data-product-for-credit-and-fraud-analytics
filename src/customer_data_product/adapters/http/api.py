@@ -2,7 +2,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
@@ -47,6 +47,7 @@ class CustomerResponse(BaseModel):
     total_balance: float | None
     transaction_count: int
     transaction_amount: float
+    transaction_amount_currency: str
     declined_transaction_count: int
     fraud_event_count: int
     confirmed_fraud_count: int
@@ -54,6 +55,8 @@ class CustomerResponse(BaseModel):
     last_transaction_at: datetime | None
     batch_id: str
     updated_at: datetime
+    effective_at: datetime | None
+    as_of_time: datetime
 
 
 class LineageFileResponse(BaseModel):
@@ -239,9 +242,12 @@ def router(
         )
 
     @api.get("/customers/{customer_id}", response_model=CustomerResponse)
-    def get_customer(customer_id: str) -> CustomerResponse:
+    def get_customer(
+        customer_id: str,
+        as_of: datetime | None = Query(default=None),
+    ) -> CustomerResponse:
         try:
-            customer = repository.get_customer_snapshot(customer_id)
+            customer = repository.get_customer_snapshot(customer_id, as_of)
         except NotImplementedError as exc:
             raise HTTPException(status_code=501, detail=str(exc)) from exc
         if customer is None:

@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from customer_data_product.domain.quality import QualityThresholds
@@ -23,6 +26,12 @@ class Settings(BaseSettings):
     min_required_field_completeness: float = 0.99
     max_volume_change_rate: float = 0.50
     max_freshness_seconds: float = 86400.0
+    base_currency: str = "USD"
+    exchange_rate_source: str = "configured"
+    exchange_rate_timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    exchange_rates: dict[str, Decimal] = Field(default_factory=dict)
 
     @property
     def quality_thresholds(self) -> QualityThresholds:

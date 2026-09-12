@@ -40,6 +40,10 @@ class Transaction:
     merchant_id: str | None = None
     merchant_category: str | None = None
     country: str | None = None
+    amount_base_currency: Decimal | None = None
+    exchange_rate: Decimal | None = None
+    exchange_rate_source: str | None = None
+    exchange_rate_timestamp: datetime | None = None
 
 
 @dataclass(frozen=True)

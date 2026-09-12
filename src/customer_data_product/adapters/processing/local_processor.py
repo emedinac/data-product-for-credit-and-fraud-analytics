@@ -1,5 +1,6 @@
 import logging
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -12,6 +13,8 @@ from customer_data_product.adapters.processing.parser import (
     parse_transactions,
 )
 from customer_data_product.adapters.storage.local_filesystem import LocalObjectStorage
+from customer_data_product.domain.currency import CurrencyPolicy
+from customer_data_product.domain.models import Transaction
 from customer_data_product.observability import emit_metric
 
 logger = logging.getLogger(__name__)
@@ -27,10 +30,14 @@ def _increment(counts: dict[str, object], key: str) -> None:
 
 class LocalProcessor:
     def __init__(
-        self, storage: LocalObjectStorage, repository: PostgresRepository
+        self,
+        storage: LocalObjectStorage,
+        repository: PostgresRepository,
+        currency_policy: CurrencyPolicy | None = None,
     ) -> None:
         self.storage = storage
         self.repository = repository
+        self.currency_policy = currency_policy or CurrencyPolicy()
 
     def process_batch(
         self, batch_id: str
@@ -57,6 +64,10 @@ class LocalProcessor:
                 "snapshot_count": cast(int, batch["snapshot_count"]),
             }
         self.repository.update_status(batch_id, "PROCESSING")
+        processing_started_at = datetime.now(timezone.utc)
+        self.repository.update_status(
+            batch_id, "PROCESSING", processing_started_at=processing_started_at
+        )
         counts: dict[str, object] = {
             "accepted_count": 0,
             "duplicate_count": 0,
@@ -118,6 +129,17 @@ class LocalProcessor:
                     event_time = getattr(record, "opened_at", None)
                 if event_time is not None:
                     source_times.append(event_time)
+                if isinstance(record, Transaction):
+                    converted = self.currency_policy.convert(
+                        record.amount, record.currency
+                    )
+                    record = replace(
+                        record,
+                        amount_base_currency=converted[0],
+                        exchange_rate=converted[1],
+                        exchange_rate_source=converted[2],
+                        exchange_rate_timestamp=converted[3],
+                    )
                 try:
                     inserted = saver(record, batch_id)
                 except Exception as exc:
@@ -173,6 +195,7 @@ class LocalProcessor:
         counts["freshness_seconds"] = freshness
         counts["duration_seconds"] = time.monotonic() - started
         counts["volume_change_rate"] = volume_change
+        counts["processing_completed_at"] = datetime.now(timezone.utc)
         self.repository.update_status(batch_id, "LOADED", **counts)
         emit_metric(
             "batch_processing",

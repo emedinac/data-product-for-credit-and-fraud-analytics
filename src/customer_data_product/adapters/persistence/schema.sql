@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS batches (
     volume_change_rate DOUBLE PRECISION,
     quality_status TEXT NOT NULL DEFAULT 'PENDING',
     quality_failure_reasons TEXT[] NOT NULL DEFAULT '{}',
+    arrived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processing_started_at TIMESTAMPTZ,
+    processing_completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -61,6 +64,10 @@ CREATE TABLE IF NOT EXISTS transactions (
     event_time TIMESTAMPTZ NOT NULL,
     amount NUMERIC NOT NULL,
     currency TEXT,
+    amount_base_currency NUMERIC,
+    exchange_rate NUMERIC,
+    exchange_rate_source TEXT,
+    exchange_rate_timestamp TIMESTAMPTZ,
     transaction_type TEXT,
     status TEXT,
     merchant_id TEXT,
@@ -104,13 +111,26 @@ CREATE TABLE IF NOT EXISTS customer_snapshots (
     total_balance NUMERIC,
     transaction_count INTEGER NOT NULL,
     transaction_amount NUMERIC NOT NULL,
+    transaction_amount_currency TEXT NOT NULL DEFAULT 'USD',
     declined_transaction_count INTEGER NOT NULL,
     fraud_event_count INTEGER NOT NULL,
     confirmed_fraud_count INTEGER NOT NULL,
     interaction_count INTEGER NOT NULL,
     last_transaction_at TIMESTAMPTZ,
     batch_id TEXT NOT NULL REFERENCES batches(batch_id),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    effective_at TIMESTAMPTZ,
+    as_of_time TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS customer_snapshot_history (
+    snapshot_id BIGSERIAL PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    batch_id TEXT NOT NULL REFERENCES batches(batch_id),
+    effective_at TIMESTAMPTZ,
+    as_of_time TIMESTAMPTZ NOT NULL,
+    snapshot JSONB NOT NULL,
+    UNIQUE (customer_id, batch_id)
 );
 
 CREATE TABLE IF NOT EXISTS quality_issues (

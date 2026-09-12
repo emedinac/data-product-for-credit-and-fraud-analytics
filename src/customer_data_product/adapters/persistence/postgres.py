@@ -30,8 +30,9 @@ class _ConnectionContext:
 
 
 class PostgresRepository:
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, base_currency: str = "USD") -> None:
         self.database_url = database_url
+        self.base_currency = base_currency.upper()
         self._connection = psycopg.connect(database_url, row_factory=dict_row)
 
     def _connect(self) -> _ConnectionContext:
@@ -71,6 +72,48 @@ class PostgresRepository:
             connection.execute(
                 "ALTER TABLE customer_snapshots ADD COLUMN IF NOT EXISTS "
                 "interaction_count INTEGER NOT NULL DEFAULT 0"
+            )
+            for column, definition in (
+                ("amount_base_currency", "NUMERIC"),
+                ("exchange_rate", "NUMERIC"),
+                ("exchange_rate_source", "TEXT"),
+                ("exchange_rate_timestamp", "TIMESTAMPTZ"),
+            ):
+                connection.execute(
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    f"{column} {definition}"
+                )
+            connection.execute(
+                "ALTER TABLE customer_snapshots ADD COLUMN IF NOT EXISTS "
+                "transaction_amount_currency TEXT NOT NULL DEFAULT 'USD'"
+            )
+            for column, definition in (
+                ("arrived_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+                ("processing_started_at", "TIMESTAMPTZ"),
+                ("processing_completed_at", "TIMESTAMPTZ"),
+            ):
+                connection.execute(
+                    "ALTER TABLE batches ADD COLUMN IF NOT EXISTS "
+                    f"{column} {definition}"
+                )
+            for column, definition in (
+                ("effective_at", "TIMESTAMPTZ"),
+                ("as_of_time", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+            ):
+                connection.execute(
+                    "ALTER TABLE customer_snapshots ADD COLUMN IF NOT EXISTS "
+                    f"{column} {definition}"
+                )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS customer_snapshot_history (
+                    snapshot_id BIGSERIAL PRIMARY KEY,
+                    customer_id TEXT NOT NULL,
+                    batch_id TEXT NOT NULL REFERENCES batches(batch_id),
+                    effective_at TIMESTAMPTZ,
+                    as_of_time TIMESTAMPTZ NOT NULL,
+                    snapshot JSONB NOT NULL,
+                    UNIQUE (customer_id, batch_id)
+                )"""
             )
 
     def create_batch(self, batch_id: str, source: str) -> None:
@@ -122,6 +165,8 @@ class PostgresRepository:
                 "volume_change_rate",
                 "quality_status",
                 "quality_failure_reasons",
+                "processing_started_at",
+                "processing_completed_at",
             }
         }
         assignments = ["status = %s", "updated_at = now()"]
@@ -214,9 +259,12 @@ class PostgresRepository:
             result = connection.execute(
                 """INSERT INTO transactions
                    (transaction_id, customer_id, account_id, event_time,
-                    amount, currency, transaction_type, status, merchant_id,
-                    merchant_category, country, batch_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    amount, currency, amount_base_currency, exchange_rate,
+                    exchange_rate_source, exchange_rate_timestamp,
+                    transaction_type, status, merchant_id, merchant_category,
+                    country, batch_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s)
                    ON CONFLICT (transaction_id) DO NOTHING""",
                 (
                     record.transaction_id,
@@ -225,6 +273,10 @@ class PostgresRepository:
                     record.event_time,
                     record.amount,
                     record.currency,
+                    record.amount_base_currency,
+                    record.exchange_rate,
+                    record.exchange_rate_source,
+                    record.exchange_rate_timestamp,
                     record.transaction_type,
                     record.status,
                     record.merchant_id,
@@ -283,9 +335,11 @@ class PostgresRepository:
                    (customer_id, first_name, last_name, date_of_birth, status,
                     customer_type, country, city, account_count, total_credit_limit,
                     total_balance, transaction_count,
-                    transaction_amount, declined_transaction_count,
-                    fraud_event_count, confirmed_fraud_count, interaction_count,
-                    last_transaction_at, batch_id, updated_at)
+                   transaction_amount, transaction_amount_currency,
+                   declined_transaction_count,
+                   fraud_event_count, confirmed_fraud_count, interaction_count,
+                    last_transaction_at, batch_id, updated_at, effective_at,
+                    as_of_time)
                    SELECT c.customer_id, c.first_name, c.last_name, c.date_of_birth,
                           c.status, c.customer_type, c.country, c.city,
                           (SELECT count(*) FROM accounts a
@@ -296,9 +350,12 @@ class PostgresRepository:
                            FROM accounts a WHERE a.customer_id = c.customer_id),
                           (SELECT count(*) FROM transactions t
                            WHERE t.customer_id = c.customer_id),
-                          (SELECT coalesce(sum(t.amount), 0) FROM transactions t
+                          (SELECT coalesce(sum(t.amount_base_currency), 0)
+                           FROM transactions t
                            WHERE t.customer_id = c.customer_id
-                           AND t.status = 'approved'),
+                           AND t.status = 'approved'
+                           AND t.amount_base_currency IS NOT NULL),
+                          %s,
                           (SELECT count(*) FROM transactions t
                            WHERE t.customer_id = c.customer_id
                            AND t.status = 'declined'),
@@ -311,7 +368,9 @@ class PostgresRepository:
                            WHERE i.customer_id = c.customer_id),
                           (SELECT max(t.event_time) FROM transactions t
                            WHERE t.customer_id = c.customer_id),
-                          %s, now()
+                          %s, now(),
+                          (SELECT source_event_max FROM batches
+                           WHERE batch_id = %s), now()
                    FROM customers c
                    ON CONFLICT (customer_id) DO UPDATE SET
                      first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name,
@@ -323,13 +382,24 @@ class PostgresRepository:
                      total_balance = EXCLUDED.total_balance,
                      transaction_count = EXCLUDED.transaction_count,
                      transaction_amount = EXCLUDED.transaction_amount,
+                     transaction_amount_currency = EXCLUDED.transaction_amount_currency,
                      declined_transaction_count = EXCLUDED.declined_transaction_count,
                      fraud_event_count = EXCLUDED.fraud_event_count,
                      confirmed_fraud_count = EXCLUDED.confirmed_fraud_count,
                      interaction_count = EXCLUDED.interaction_count,
                      last_transaction_at = EXCLUDED.last_transaction_at,
-                     batch_id = EXCLUDED.batch_id, updated_at = now()""",
-                (batch_id,),
+                     batch_id = EXCLUDED.batch_id,
+                     updated_at = now(), effective_at = EXCLUDED.effective_at,
+                     as_of_time = now()""",
+                (self.base_currency, batch_id, batch_id),
+            )
+            connection.execute(
+                """INSERT INTO customer_snapshot_history
+                   (customer_id, batch_id, effective_at, as_of_time, snapshot)
+                   SELECT customer_id, batch_id, effective_at, as_of_time,
+                          to_jsonb(customer_snapshots)
+                   FROM customer_snapshots
+                   ON CONFLICT (customer_id, batch_id) DO NOTHING"""
             )
             row = connection.execute(
                 "SELECT count(*) AS count FROM customer_snapshots"
@@ -339,9 +409,15 @@ class PostgresRepository:
     def get_customer_snapshot(
         self, customer_id: str, as_of: datetime | None = None
     ) -> dict[str, object] | None:
-        if as_of is not None:
-            raise NotImplementedError("historical as_of queries are deferred")
         with self._connect() as connection:
+            if as_of is not None:
+                row = connection.execute(
+                    """SELECT snapshot FROM customer_snapshot_history
+                       WHERE customer_id = %s AND as_of_time <= %s
+                       ORDER BY as_of_time DESC LIMIT 1""",
+                    (customer_id, as_of),
+                ).fetchone()
+                return row["snapshot"] if row is not None else None
             return connection.execute(
                 "SELECT * FROM customer_snapshots WHERE customer_id = %s",
                 (customer_id,),
