@@ -20,8 +20,9 @@ class Settings(BaseSettings):
     enable_ground_truth: bool = False
     port: int = 8000
     backend_url: str = "http://localhost:8000"
-    api_key: str | None = None
-    backend_api_key: str | None = None
+    backend_token: str | None = None
+    auth_audience: str | None = None
+    auth_role_bindings: str = ""
     max_quarantine_rate: float = 0.05
     max_duplicate_rate: float = 0.05
     max_referential_integrity_failure_rate: float = 0.0
@@ -49,8 +50,6 @@ class Settings(BaseSettings):
         )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
         extra="ignore",
     )
 

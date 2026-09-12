@@ -52,7 +52,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repository,
             LocalGroundTruthReader(settings.raw_root),
             enable_ground_truth=settings.enable_ground_truth,
-            api_key=settings.api_key,
+            auth_audience=settings.auth_audience,
+            auth_role_bindings=settings.auth_role_bindings,
         )
     )
 

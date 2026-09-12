@@ -1,6 +1,8 @@
+import json
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
@@ -162,16 +164,55 @@ def router(
     repository: PostgresRepository,
     ground_truth: LocalGroundTruthReader,
     enable_ground_truth: bool = False,
-    api_key: str | None = None,
+    auth_audience: str | None = None,
+    auth_role_bindings: str = "",
 ) -> APIRouter:
-    def authenticate(x_api_key: str | None = Header(default=None)) -> None:
-        if api_key and x_api_key != api_key:
-            raise HTTPException(status_code=401, detail="invalid API key")
+    try:
+        role_bindings = json.loads(auth_role_bindings) if auth_role_bindings else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError("AUTH_ROLE_BINDINGS must be valid JSON") from exc
+
+    def authenticate(
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Bearer token required")
+        token = authorization.removeprefix("Bearer ").strip()
+        try:
+            from google.auth.transport import requests  # type: ignore[import-untyped]
+            from google.oauth2 import id_token  # type: ignore[import-untyped]
+
+            claims = id_token.verify_oauth2_token(
+                token, requests.Request(), audience=auth_audience
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail="invalid bearer token") from exc
+        return cast(dict[str, Any], claims)
+
+    def require_role(
+        *allowed: str,
+    ) -> Callable[[dict[str, Any]], dict[str, Any]]:
+        def dependency(
+            claims: dict[str, Any] = Depends(authenticate),
+        ) -> dict[str, Any]:
+            subject = str(claims.get("email") or claims.get("sub") or "")
+            roles = set(claims.get("roles", []))
+            configured_role = role_bindings.get(subject)
+            if configured_role:
+                roles.add(configured_role)
+            if not roles.intersection(allowed):
+                raise HTTPException(status_code=403, detail="insufficient role")
+            return {**claims, "_roles": roles}
+
+        return dependency
 
     api = APIRouter(prefix="/v1", dependencies=[Depends(authenticate)])
 
     @api.post("/batches", response_model=BatchResponse, status_code=201)
-    def create_batch(request: BatchCreateRequest) -> BatchResponse:
+    def create_batch(
+        request: BatchCreateRequest,
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> BatchResponse:
         batch_id = service.create(request.source)
         batch = repository.get_batch(batch_id)
         assert batch is not None
@@ -180,7 +221,11 @@ def router(
     @api.post(
         "/batches/{batch_id}/files", response_model=UploadResponse, status_code=201
     )
-    def upload_file(batch_id: str, file: UploadFile = File(...)) -> UploadResponse:
+    def upload_file(
+        batch_id: str,
+        file: UploadFile = File(...),
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> UploadResponse:
         if repository.get_batch(batch_id) is None:
             raise HTTPException(status_code=404, detail="batch not found")
         if not file.filename:
@@ -202,7 +247,10 @@ def router(
         )
 
     @api.post("/batches/{batch_id}/process", response_model=BatchResponse)
-    def process_batch(batch_id: str) -> BatchResponse:
+    def process_batch(
+        batch_id: str,
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> BatchResponse:
         if repository.get_batch(batch_id) is None:
             raise HTTPException(status_code=404, detail="batch not found")
         try:
@@ -214,14 +262,20 @@ def router(
         return BatchResponse(**batch)
 
     @api.get("/batches/{batch_id}", response_model=BatchResponse)
-    def get_batch(batch_id: str) -> BatchResponse:
+    def get_batch(
+        batch_id: str,
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
+    ) -> BatchResponse:
         batch = repository.get_batch(batch_id)
         if batch is None:
             raise HTTPException(status_code=404, detail="batch not found")
         return BatchResponse(**batch)
 
     @api.get("/batches/{batch_id}/lineage", response_model=LineageResponse)
-    def get_batch_lineage(batch_id: str) -> LineageResponse:
+    def get_batch_lineage(
+        batch_id: str,
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
+    ) -> LineageResponse:
         batch = repository.get_batch(batch_id)
         if batch is None:
             raise HTTPException(status_code=404, detail="batch not found")
@@ -245,6 +299,7 @@ def router(
     def get_customer(
         customer_id: str,
         as_of: datetime | None = Query(default=None),
+        claims: dict[str, Any] = Depends(require_role("reader", "pii_reader", "admin")),
     ) -> CustomerResponse:
         try:
             customer = repository.get_customer_snapshot(customer_id, as_of)
@@ -252,20 +307,36 @@ def router(
             raise HTTPException(status_code=501, detail=str(exc)) from exc
         if customer is None:
             raise HTTPException(status_code=404, detail="customer not found")
+        if not set(claims.get("_roles", claims.get("roles", []))).intersection(
+            {"pii_reader", "admin"}
+        ):
+            customer = {
+                **customer,
+                "first_name": None,
+                "last_name": None,
+                "date_of_birth": None,
+                "city": None,
+            }
         return CustomerResponse(**customer)
 
     @api.get("/summary", response_model=SummaryResponse)
-    def get_summary() -> SummaryResponse:
+    def get_summary(
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
+    ) -> SummaryResponse:
         return SummaryResponse(**repository.get_summary())
 
     @api.get("/status", response_model=SummaryResponse)
-    def get_status() -> SummaryResponse:
-        return get_summary()
+    def get_status(
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
+    ) -> SummaryResponse:
+        return SummaryResponse(**repository.get_summary())
 
     @api.get(
         "/summary/distributions", response_model=SummaryDistributionsResponse
     )
-    def get_summary_distributions() -> SummaryDistributionsResponse:
+    def get_summary_distributions(
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
+    ) -> SummaryDistributionsResponse:
         return SummaryDistributionsResponse(**repository.get_distributions())
 
     @api.get("/quality", response_model=list[QualityIssueResponse])
@@ -274,6 +345,7 @@ def router(
         filename: str | None = None,
         issue_type: str | None = None,
         limit: int = 100,
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
     ) -> list[QualityIssueResponse]:
         safe_limit = min(max(limit, 1), 5000)
         return [
@@ -287,13 +359,17 @@ def router(
         ]
 
     @api.get("/quality/summary", response_model=QualitySummaryResponse)
-    def get_quality_summary() -> QualitySummaryResponse:
+    def get_quality_summary(
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
+    ) -> QualitySummaryResponse:
         return QualitySummaryResponse(**repository.get_quality_summary())
 
     if enable_ground_truth:
 
         @api.get("/ground-truth", response_model=GroundTruthResponse)
-        def get_ground_truth() -> GroundTruthResponse:
+        def get_ground_truth(
+            _: dict[str, Any] = Depends(require_role("admin")),
+        ) -> GroundTruthResponse:
             report = ground_truth.read()
             return GroundTruthResponse(
                 source=report.source,
