@@ -31,3 +31,6 @@ class LocalObjectStorage:
             for path in base.rglob("*")
             if path.is_file()
         ]
+
+    def size(self, key: str) -> int:
+        return self.get(key).stat().st_size

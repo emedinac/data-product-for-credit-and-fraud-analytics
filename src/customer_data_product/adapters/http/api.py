@@ -192,7 +192,7 @@ def router(
         record = service.upload_file(
             batch_id, file.filename, iter(lambda: file.file.read(1024 * 1024), b"")
         )
-        size = Path(service.storage.root / record.storage_key).stat().st_size  # type: ignore[attr-defined]
+        size = service.storage.size(record.storage_key)
         return UploadResponse(
             batch_id=record.batch_id,
             file_id=record.file_id,

@@ -12,7 +12,7 @@ from customer_data_product.adapters.processing.parser import (
     parse_interactions,
     parse_transactions,
 )
-from customer_data_product.adapters.storage.local_filesystem import LocalObjectStorage
+from customer_data_product.application.ports import ObjectStorage
 from customer_data_product.domain.currency import CurrencyPolicy
 from customer_data_product.domain.models import Transaction
 from customer_data_product.observability import emit_metric
@@ -31,7 +31,7 @@ def _increment(counts: dict[str, object], key: str) -> None:
 class LocalProcessor:
     def __init__(
         self,
-        storage: LocalObjectStorage,
+        storage: ObjectStorage,
         repository: PostgresRepository,
         currency_policy: CurrencyPolicy | None = None,
     ) -> None:
