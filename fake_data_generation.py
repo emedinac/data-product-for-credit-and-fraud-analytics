@@ -533,25 +533,34 @@ def random_id(prefix):
 
 
 def random_date(
-    start_year=2024,
-    end_year=2026,
+    start_year=None,
+    end_year=None,
 ):
-    start = datetime(
-        start_year,
-        1,
-        1,
-        tzinfo=timezone.utc,
-    )
+    now = datetime.now(timezone.utc)
 
-    end = datetime(
-        end_year,
-        12,
-        31,
-        23,
-        59,
-        59,
-        tzinfo=timezone.utc,
+    if start_year is None:
+        try:
+            start = now.replace(year=now.year - 5)
+        except ValueError:
+            # Handle February 29 when running five years after a leap year.
+            start = now.replace(year=now.year - 5, day=28)
+    else:
+        start = datetime(start_year, 1, 1, tzinfo=timezone.utc)
+
+    requested_end = (
+        now
+        if end_year is None
+        else datetime(
+            end_year,
+            12,
+            31,
+            23,
+            59,
+            59,
+            tzinfo=timezone.utc,
+        )
     )
+    end = min(requested_end, now)
 
     seconds = int((end - start).total_seconds())
 
