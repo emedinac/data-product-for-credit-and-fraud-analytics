@@ -67,6 +67,12 @@ class LineageFileResponse(BaseModel):
     storage_key: str
 
 
+class FieldLineageResponse(BaseModel):
+    target_field: str
+    source_fields: list[str]
+    transformation: str
+
+
 class LineageResponse(BaseModel):
     batch_id: str
     source: str
@@ -74,6 +80,7 @@ class LineageResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     files: list[LineageFileResponse]
+    field_lineage: list[FieldLineageResponse]
 
 
 class SummaryResponse(BaseModel):
@@ -157,6 +164,136 @@ class QualitySummaryResponse(BaseModel):
     source_event_min: datetime | None
     source_event_max: datetime | None
     updated_at: datetime | None
+
+
+FIELD_LINEAGE = [
+    FieldLineageResponse(
+        target_field="customer_id",
+        source_fields=["customer_core.customer_id"],
+        transformation="Pass through; customer key.",
+    ),
+    FieldLineageResponse(
+        target_field="first_name",
+        source_fields=["customer_core.first_name"],
+        transformation="Trim whitespace; preserve null.",
+    ),
+    FieldLineageResponse(
+        target_field="last_name",
+        source_fields=["customer_core.last_name"],
+        transformation="Trim whitespace; preserve null.",
+    ),
+    FieldLineageResponse(
+        target_field="date_of_birth",
+        source_fields=["customer_core.date_of_birth"],
+        transformation="Parse as ISO date; preserve null.",
+    ),
+    FieldLineageResponse(
+        target_field="status",
+        source_fields=["customer_core.customer_status"],
+        transformation="Normalize case, separators, and whitespace.",
+    ),
+    FieldLineageResponse(
+        target_field="customer_type",
+        source_fields=["customer_core.customer_type"],
+        transformation="Normalize case, separators, and whitespace.",
+    ),
+    FieldLineageResponse(
+        target_field="country",
+        source_fields=["customer_core.country"],
+        transformation="Trim and uppercase.",
+    ),
+    FieldLineageResponse(
+        target_field="city",
+        source_fields=["customer_core.city"],
+        transformation="Trim whitespace; preserve null.",
+    ),
+    FieldLineageResponse(
+        target_field="account_count",
+        source_fields=["accounts.account_id", "accounts.customer_id"],
+        transformation="Count accounts grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="total_credit_limit",
+        source_fields=["accounts.credit_limit", "accounts.customer_id"],
+        transformation="Sum account credit_limit grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="total_balance",
+        source_fields=["accounts.current_balance", "accounts.customer_id"],
+        transformation="Sum account current_balance grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="transaction_count",
+        source_fields=["transactions.transaction_id", "transactions.customer_id"],
+        transformation="Count transactions grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="transaction_amount",
+        source_fields=[
+            "transactions.amount",
+            "transactions.currency",
+            "transactions.status",
+            "transactions.customer_id",
+            "configured exchange rates",
+        ],
+        transformation="Sum approved amounts after conversion to base currency.",
+    ),
+    FieldLineageResponse(
+        target_field="transaction_amount_currency",
+        source_fields=["BASE_CURRENCY configuration"],
+        transformation="Configured base currency.",
+    ),
+    FieldLineageResponse(
+        target_field="declined_transaction_count",
+        source_fields=["transactions.status", "transactions.customer_id"],
+        transformation=(
+            "Count transactions with status declined grouped by customer_id."
+        ),
+    ),
+    FieldLineageResponse(
+        target_field="last_transaction_at",
+        source_fields=["transactions.timestamp", "transactions.customer_id"],
+        transformation="Maximum transaction timestamp grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="fraud_event_count",
+        source_fields=["fraud.event_id", "fraud.customer_id"],
+        transformation="Count fraud events grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="confirmed_fraud_count",
+        source_fields=["fraud.confirmed_fraud", "fraud.customer_id"],
+        transformation="Count confirmed fraud events grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="interaction_count",
+        source_fields=[
+            "customer_service.interaction_id",
+            "customer_service.customer_id",
+        ],
+        transformation="Count interactions grouped by customer_id.",
+    ),
+    FieldLineageResponse(
+        target_field="batch_id",
+        source_fields=["batch metadata.batch_id"],
+        transformation="Batch that produced the snapshot.",
+    ),
+    FieldLineageResponse(
+        target_field="updated_at",
+        source_fields=["batch metadata.publication time"],
+        transformation="Snapshot publication timestamp.",
+    ),
+    FieldLineageResponse(
+        target_field="effective_at",
+        source_fields=["source event timestamps"],
+        transformation="Latest source event represented in the snapshot.",
+    ),
+    FieldLineageResponse(
+        target_field="as_of_time",
+        source_fields=["batch metadata.publication time"],
+        transformation="Time at which the snapshot was published.",
+    ),
+]
 
 
 def router(
@@ -293,6 +430,7 @@ def router(
                 )
                 for file in repository.list_files(batch_id)
             ],
+            field_lineage=FIELD_LINEAGE,
         )
 
     @api.get("/customers/{customer_id}", response_model=CustomerResponse)

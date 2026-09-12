@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from prometheus_client import make_asgi_app
 
 from customer_data_product.adapters.events import LocalEventPublisher
 from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
@@ -10,11 +11,13 @@ from customer_data_product.adapters.storage.local_filesystem import LocalObjectS
 from customer_data_product.application.ports import ObjectStorage
 from customer_data_product.application.services import BatchService
 from customer_data_product.domain.currency import CurrencyPolicy
+from customer_data_product.observability import configure_cloud_monitoring
 from customer_data_product.settings import Settings, get_settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    configure_cloud_monitoring(settings.gcp_project_id)
     storage: ObjectStorage
     if settings.storage_backend.lower() == "gcs":
         if not settings.storage_bucket:
@@ -46,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.quality_thresholds,
     )
     app = FastAPI(title="Customer Data Product", version="0.1.0")
+    app.mount("/metrics", make_asgi_app())
     app.include_router(
         router(
             service,

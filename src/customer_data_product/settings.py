@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     lake_root: Path = Path("lake")
     storage_backend: str = "local"
     storage_bucket: str | None = None
+    gcp_project_id: str | None = None
     raw_root: Path = Path("raw_dev")
     enable_ground_truth: bool = False
     port: int = 8000
