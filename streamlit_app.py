@@ -1,451 +1,372 @@
-import csv
-import io
+"""Small local viewer for the generated raw-data ground truth."""
+
+from __future__ import annotations
+
 import json
+import os
 from collections import Counter
-from datetime import date, datetime, time, timezone
+from pathlib import Path
 from typing import Any
 
-import httpx
+import plotly.graph_objects as go
 import streamlit as st
-
-from customer_data_product.settings import get_settings
-
-BACKEND_URL = get_settings().backend_url.rstrip("/")
-ENABLE_GROUND_TRUTH = get_settings().enable_ground_truth
-
-CUSTOMER_STATUSES = ["active", "inactive", "blocked", "closed"]
-CUSTOMER_TYPES = ["individual", "premium", "business"]
-ACCOUNT_TYPES = ["credit_card", "personal_loan", "payment_account"]
-ACCOUNT_STATUSES = ["active", "blocked", "closed", "pending"]
-TRANSACTION_TYPES = ["purchase", "withdrawal", "transfer", "payment", "refund"]
-TRANSACTION_STATUSES = ["approved", "declined", "reversed"]
-FRAUD_TYPES = [
-    "suspicious_transaction",
-    "account_takeover",
-    "card_stolen",
-    "identity_risk",
-    "chargeback",
-]
-FRAUD_SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-
-
-def request(
-    method: str,
-    path: str,
-    *,
-    json_body: dict[str, Any] | None = None,
-    files: dict[str, tuple[str, bytes, str]] | None = None,
-) -> dict[str, Any]:
-    try:
-        response = httpx.request(
-            method,
-            f"{BACKEND_URL}{path}",
-            json=json_body,
-            files=files,
-            timeout=120,
-        )
-        if response.is_error:
-            try:
-                detail = response.json().get("detail", response.text)
-            except ValueError:
-                detail = response.text
-            raise RuntimeError(f"{response.status_code}: {detail}")
-        return response.json()
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"Backend unavailable: {exc}") from exc
-
-
-def iso_datetime(value: date, hour: int, minute: int) -> str:
-    return datetime.combine(value, time(hour, minute), tzinfo=timezone.utc).isoformat()
-
-
-def observation_file(kind: str, values: dict[str, Any]) -> tuple[str, bytes, str]:
-    if kind == "Customer":
-        payload = {"batch": {"record_count": 1}, "records": [values]}
-        return (
-            "customer_observation.json",
-            json.dumps(payload).encode(),
-            "application/json",
-        )
-    if kind == "Account":
-        output = io.StringIO()
-        writer = csv.DictWriter(
-            output,
-            fieldnames=[
-                "ACCOUNT_ID",
-                "CUSTOMER",
-                "PRODUCT",
-                "OPEN_DATE",
-                "LIMIT",
-                "BALANCE",
-                "STATE",
-            ],
-        )
-        writer.writeheader()
-        writer.writerow(values)
-        return "account_observation.csv", output.getvalue().encode(), "text/csv"
-    if kind == "Transaction":
-        payload = {
-            "event_type": "transaction",
-            "transaction_id": values["transaction_id"],
-            "customer_id": values["customer_id"],
-            "account_id": values["account_id"],
-            "event_time": values["event_time"],
-            "transaction": {
-                "type": values["type"],
-                "amount": {
-                    "currency": values["currency"],
-                    "amount": values["amount"],
-                },
-                "merchant_id": values["merchant_id"],
-                "merchant_category": values["merchant_category"],
-            },
-            "country": values["country"],
-            "status": values["status"],
-        }
-        return (
-            "transaction_observation.jsonl",
-            (json.dumps(payload) + "\n").encode(),
-            "application/jsonl",
-        )
-    payload = {
-        "event_type": "fraud_event",
-        "event_id": values["event_id"],
-        "customer_id": values["customer_id"],
-        "transaction_id": values["transaction_id"] or None,
-        "timestamp": values["timestamp"],
-        "classification": {
-            "type": values["type"],
-            "severity": values["severity"],
-            "confirmed": values["confirmed"],
-        },
-    }
-    return (
-        "fraud_observation.jsonl",
-        (json.dumps(payload) + "\n").encode(),
-        "application/jsonl",
-    )
-
-
-def category_chart(values: dict[str, int]) -> list[dict[str, int | str]]:
-    return [
-        {"category": category, "cases": count}
-        for category, count in values.items()
-    ]
-
-
-def submit_observation(kind: str, values: dict[str, Any]) -> dict[str, Any]:
-    batch = request(
-        "POST",
-        "/v1/batches",
-        json_body={"source": "streamlit_observation"},
-    )
-    filename, content, content_type = observation_file(kind, values)
-    request(
-        "POST",
-        f"/v1/batches/{batch['batch_id']}/files",
-        files={"file": (filename, content, content_type)},
-    )
-    return request("POST", f"/v1/batches/{batch['batch_id']}/process")
-
-
-def render_observation_form() -> None:
-    st.subheader("Add a data observation")
-    kind = st.selectbox(
-        "Observation type", ["Customer", "Account", "Transaction", "Fraud event"]
-    )
-    with st.form("observation_form"):
-        values: dict[str, Any] = {}
-        if kind == "Customer":
-            values["customer_id"] = st.text_input("Customer ID")
-            values["first_name"] = st.text_input("First name")
-            values["last_name"] = st.text_input("Last name")
-            birth_date = st.date_input(
-                "Date of birth", value=date(1990, 1, 1)
-            )
-            values["date_of_birth"] = birth_date.isoformat()
-            values["city"] = st.text_input("City")
-            values["status"] = st.selectbox("Status", CUSTOMER_STATUSES)
-            values["customer_type"] = st.selectbox(
-                "Customer type", CUSTOMER_TYPES
-            )
-            values["country"] = st.text_input(
-                "Country", value="US", max_chars=2
-            ).upper()
-            registered = st.date_input("Registration date", value=date.today())
-            values["registered_at"] = registered.isoformat()
-        elif kind == "Account":
-            values["ACCOUNT_ID"] = st.text_input("Account ID")
-            values["CUSTOMER"] = st.text_input("Customer ID")
-            values["PRODUCT"] = st.selectbox("Account type", ACCOUNT_TYPES)
-            opened = st.date_input("Opening date", value=date.today())
-            values["OPEN_DATE"] = opened.isoformat()
-            values["LIMIT"] = st.number_input(
-                "Credit limit", min_value=0.0, value=0.0
-            )
-            values["BALANCE"] = st.number_input("Balance", value=0.0)
-            values["STATE"] = st.selectbox("Account status", ACCOUNT_STATUSES)
-        elif kind == "Transaction":
-            values["transaction_id"] = st.text_input("Transaction ID")
-            values["customer_id"] = st.text_input("Customer ID")
-            values["account_id"] = st.text_input("Account ID")
-            event_date = st.date_input("Transaction date", value=date.today())
-            hour = st.number_input("Hour", min_value=0, max_value=23, value=12)
-            minute = st.number_input("Minute", min_value=0, max_value=59, value=0)
-            values["event_time"] = iso_datetime(event_date, hour, minute)
-            values["amount"] = st.number_input(
-                "Amount", min_value=0.0, value=0.0
-            )
-            values["currency"] = st.text_input(
-                "Currency", value="USD", max_chars=3
-            ).upper()
-            values["merchant_id"] = st.text_input("Merchant ID")
-            values["merchant_category"] = st.text_input("Merchant category")
-            values["country"] = st.text_input(
-                "Transaction country", value="US", max_chars=2
-            ).upper()
-            values["type"] = st.selectbox("Transaction type", TRANSACTION_TYPES)
-            values["status"] = st.selectbox(
-                "Transaction status", TRANSACTION_STATUSES
-            )
-        else:
-            values["event_id"] = st.text_input("Fraud event ID")
-            values["customer_id"] = st.text_input("Customer ID")
-            values["transaction_id"] = st.text_input("Transaction ID (optional)")
-            event_date = st.date_input("Event date", value=date.today())
-            values["timestamp"] = event_date.isoformat()
-            values["type"] = st.selectbox("Fraud type", FRAUD_TYPES)
-            values["severity"] = st.selectbox("Severity", FRAUD_SEVERITIES)
-            values["confirmed"] = st.checkbox("Confirmed fraud")
-
-        submitted = st.form_submit_button("Submit observation")
-        if submitted:
-            try:
-                result = submit_observation(kind, values)
-                st.success("Observation processed")
-                st.json(result)
-            except RuntimeError as exc:
-                st.error(str(exc))
-
-
-def render_dashboard() -> None:
-    try:
-        summary = request("GET", "/v1/summary")
-        distributions = request("GET", "/v1/summary/distributions")
-        quality = request("GET", "/v1/quality?limit=500")
-    except RuntimeError as exc:
-        st.error(str(exc))
-        return
-
-    st.subheader("Current data")
-    metrics = [
-        ("Customers", summary["customer_count"]),
-        ("Accounts", summary["account_count"]),
-        ("Transactions", summary["transaction_count"]),
-        ("Fraud events", summary["fraud_event_count"]),
-        ("Confirmed fraud", summary["confirmed_fraud_count"]),
-        ("Accepted / loaded", summary["latest_accepted_count"]),
-        ("Duplicates", summary["latest_duplicate_count"]),
-        ("Quarantined", summary["latest_quarantined_count"]),
-    ]
-    columns = st.columns(3)
-    for index, (label, value) in enumerate(metrics):
-        columns[index % 3].metric(label, value)
-
-    left, right = st.columns(2)
-    with left:
-        st.caption("Customers by status")
-        st.bar_chart(
-            category_chart(
-                {
-                    item["label"]: item["count"]
-                    for item in distributions["customers_by_status"]
-                }
-            ),
-            x="category",
-            y="cases",
-            sort="-cases",
-            height=360,
-        )
-    with right:
-        st.caption("Transactions by status")
-        st.bar_chart(
-            category_chart(
-                {
-                    item["label"]: item["count"]
-                    for item in distributions["transactions_by_status"]
-                }
-            ),
-            x="category",
-            y="cases",
-            sort="-cases",
-            height=360,
-        )
-
-    st.subheader("Data ingestion status")
-    quality_types = ["All"] + sorted(
-        {issue["issue_type"] for issue in quality}
-    )
-    selected_type = st.selectbox("Quality status", quality_types)
-    selected_quality = (
-        quality
-        if selected_type == "All"
-        else [issue for issue in quality if issue["issue_type"] == selected_type]
-    )
-    st.caption(
-        "Accepted means loaded into the product. Quarantined means rejected "
-        "for validation or reference errors. Duplicates were already loaded."
-    )
-    st.dataframe(selected_quality, width="stretch")
-
-
-def render_ground_truth() -> None:
-    st.subheader("GTs")
-    try:
-        ground_truth = request("GET", "/v1/ground-truth")
-    except RuntimeError as exc:
-        st.error(str(exc))
-        return
-
-    st.info(ground_truth["description"])
-    st.caption(f"Source: {ground_truth['source']}")
-    columns = st.columns(4)
-    columns[0].metric("Total cases", ground_truth["total"])
-    columns[1].metric("Found", ground_truth["evidence_found"])
-    columns[2].metric("Missing", ground_truth["evidence_missing"])
-    columns[3].metric(
-        "Misclassified",
-        sum(record["misclassified"] for record in ground_truth["records"]),
-    )
-
-    records = ground_truth["records"]
-    fraud_only = st.checkbox(
-        "Show confirmed fraud cases only",
-        value=True,
-        help="Filter to ground-truth records labelled as fraud.",
-    )
-    if fraud_only:
-        records = [record for record in records if record["label"] == "fraud"]
-    st.caption(
-        "Prediction is a baseline heuristic: evidence with a confirmed "
-        "fraud_event is predicted as fraud."
-    )
-    evidence_scope = st.selectbox(
-        "Cases to display",
-        ["Found", "All", "Misclassified", "Missing"],
-        help="This selection controls the charts and samples below.",
-    )
-    if evidence_scope == "Missing":
-        records = [record for record in records if not record["evidence_found"]]
-    elif evidence_scope == "Misclassified":
-        records = [record for record in records if record["misclassified"]]
-    elif evidence_scope == "Found":
-        records = [record for record in records if record["evidence_found"]]
-
-    labels_by_type = dict(Counter(record["label"] for record in records))
-    subtypes = dict(
-        Counter(record["subtype"] for record in records if record["subtype"])
-    )
-    left, right = st.columns(2)
-    with left:
-        st.caption(f"Labels — {evidence_scope}")
-        st.bar_chart(
-            category_chart(labels_by_type),
-            x="category",
-            y="cases",
-            sort="-cases",
-            height=360,
-        )
-    with right:
-        st.caption(f"Fraud/anomaly subtypes — {evidence_scope}")
-        st.bar_chart(
-            category_chart(subtypes),
-            x="category",
-            y="cases",
-            sort="-cases",
-            height=360,
-        )
-
-    st.caption("Find ground-truth cases")
-    subtype_options = sorted(
-        {record["subtype"] for record in records if record["subtype"]}
-    )
-    subtype = st.selectbox("Subtype", ["All"] + subtype_options)
-    search = st.text_input("Search scenario ID or label")
-    if subtype != "All":
-        records = [record for record in records if record["subtype"] == subtype]
-    if search:
-        term = search.lower()
-        records = [
-            record
-            for record in records
-            if term in record["scenario_id"].lower()
-            or term in record["label"].lower()
-        ]
-    display_records = []
-    for record in records:
-        display_record = {
-            "scenario_id": record["scenario_id"],
-            "customer_id": record.get("customer_id"),
-            "transaction_ids": ", ".join(record.get("transaction_ids", [])),
-            "label": record["label"],
-            "subtype": record["subtype"],
-            "confirmed_fraud": record["confirmed"],
-            "evidence_found": record["evidence_found"],
-            "event_types": ", ".join(record.get("event_types", [])),
-            "explanation": record["explanation"],
-            "predicted_label": record["predicted_label"],
-            "classification_result": record["classification_result"],
-            "misclassified": record["misclassified"],
-        }
-        display_records.append(display_record)
-    st.write(f"Matching cases: {len(records)}")
-    st.dataframe(display_records, width="stretch")
-
-    if records:
-        st.caption("Full case evidence")
-        records_by_id = {
-            record["scenario_id"]: record for record in records
-        }
-        selected_scenario = st.selectbox(
-            "Select one case to inspect",
-            list(records_by_id),
-        )
-        selected_record = records_by_id[selected_scenario]
-        customer = selected_record.get("customer_id") or "unknown customer"
-        fraud_state = "TRUE" if selected_record["confirmed"] else "FALSE"
-        with st.expander(
-            f"{customer} — {selected_scenario} — "
-            f"confirmed fraud: {fraud_state}",
-            expanded=True,
-        ):
-            st.json(selected_record)
-
-
-st.set_page_config(page_title="Customer Data Product", layout="wide")
-st.markdown(
-    """
-    <style>
-    div[data-testid="stMetric"] {
-        min-height: 108px;
-    }
-    div[data-testid="stMetricLabel"] {
-        min-height: 2.5rem;
-        align-items: flex-start;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    matthews_corrcoef,
+    precision_score,
+    recall_score,
 )
-st.title("Customer Data Product")
-st.caption(f"Backend: {BACKEND_URL}")
 
-if st.button("Refresh dashboard"):
-    st.rerun()
 
-if ENABLE_GROUND_TRUTH:
-    render_ground_truth()
-    st.divider()
-render_dashboard()
-st.divider()
-render_observation_form()
+def find_raw_root() -> Path:
+    configured = Path(os.getenv("DATA_ROOT", "raw_dev"))
+    return configured if configured.is_dir() else Path("dev_raw")
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as file:
+        return json.load(file)
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    with path.open(encoding="utf-8") as file:
+        return [json.loads(line) for line in file if line.strip()]
+
+
+def load_ground_truth(raw_root: Path) -> dict[str, Any]:
+    metadata = raw_root / "metadata"
+    return {
+        "manifest": read_json(metadata / "manifest.json"),
+        "quality": read_json(metadata / "quality_ground_truth.json"),
+        "sources": read_json(metadata / "source_systems.json"),
+        "scenarios": read_jsonl(raw_root / "ground_truth" / "scenario_labels.jsonl"),
+    }
+
+
+def show_bar_table(
+    values: dict[str, int | float],
+    *,
+    total: int | float | None = None,
+    percent: bool = False,
+    prediction_total: int | None = None,
+    observed_counts: dict[str, int | None] | None = None,
+) -> None:
+    rows = []
+    denominator = 1.0 if percent else total
+    if denominator is None:
+        denominator = max((float(value) for value in values.values()), default=1.0)
+    show_percentage = percent or total is not None
+    for label, value in values.items():
+        numeric = float(value)
+        share = numeric / denominator if denominator else 0.0
+        rows.append({
+            "label": label,
+            "ground_truth": f"{value:.2%}" if percent else value,
+                "bar": share * 100 if show_percentage else share,
+        })
+        if prediction_total is not None:
+            rows[-1]["configured rate"] = rows[-1].pop("ground_truth")
+        if percent and prediction_total is not None:
+            predicted = round(float(value) * prediction_total)
+            rows[-1]["expected at configured rate"] = (
+                f"{predicted:,}/{prediction_total:,} ({value:.2%})"
+            )
+        if percent and observed_counts is not None:
+            observed = observed_counts.get(label)
+            rows[-1]["observed"] = (
+                "—"
+                if observed is None or prediction_total is None
+                else f"{observed:,}/{prediction_total:,} "
+                f"({observed / prediction_total:.2%})"
+            )
+        if not percent and total is not None:
+            rows[-1]["count / total"] = f"{value:g}/{total:g}"
+    st.dataframe(
+        rows,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "bar": st.column_config.ProgressColumn(
+                "distribution",
+                min_value=0,
+                max_value=100 if show_percentage else 1,
+                format="%.2f%%" if show_percentage else "%g",
+            )
+        },
+    )
+
+
+def show_found_vs_global(found: dict[str, int], global_cases: dict[str, int]) -> None:
+    labels = list(found)
+    found_percent = [
+        found[label] / global_cases[label] * 100 if global_cases[label] else 0
+        for label in labels
+    ]
+    global_percent = [100.0] * len(labels)
+    found_text = [
+        f"{found[label]:,}/{global_cases[label]:,} ({value:.2f}%)"
+        for label, value in zip(labels, found_percent)
+    ]
+    figure = go.Figure([
+        go.Bar(
+            name="found",
+            y=labels,
+            x=found_percent,
+            orientation="h",
+            text=found_text,
+            textposition="auto",
+            marker_color="#4C78A8",
+        ),
+        go.Bar(
+            name="global",
+            y=labels,
+            x=global_percent,
+            orientation="h",
+            text=[f"{global_cases[label]:,} (100%)" for label in labels],
+            textposition="auto",
+            marker_color="#D9E2F3",
+        ),
+    ])
+    figure.update_layout(
+        barmode="group",
+        height=300,
+        margin={"l": 0, "r": 0, "t": 10, "b": 10},
+        xaxis={"title": "share of global cases", "range": [0, 110], "ticksuffix": "%"},
+        yaxis={"title": None},
+        legend={"orientation": "h", "y": 1.12},
+    )
+    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+
+
+def fraud_metrics(quality: dict[str, Any]) -> dict[str, float]:
+    y_true, y_pred = fraud_labels(quality)
+
+    return {
+        "precision": precision_score(
+            y_true, y_pred, pos_label="fraud", zero_division=0
+        ),
+        "recall": recall_score(y_true, y_pred, pos_label="fraud", zero_division=0),
+        "f1_score": f1_score(y_true, y_pred, pos_label="fraud", zero_division=0),
+        "accuracy": accuracy_score(y_true, y_pred),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "specificity": recall_score(
+            y_true, y_pred, pos_label="not_fraud", zero_division=0
+        ),
+        "matthews_corrcoef": matthews_corrcoef(y_true, y_pred),
+    }
+
+
+def fraud_labels(quality: dict[str, Any]) -> tuple[list[str], list[str]]:
+    metrics = quality["classification_metrics"]
+    misclassified = quality["misclassification"]
+    supports = {
+        label: int(metrics[label]["support"]) for label in ("fraud", "not_fraud")
+    }
+    missed_by_label = misclassified.get("misclassified_by_label", {})
+    y_true: list[str] = []
+    y_pred: list[str] = []
+    for label, support in supports.items():
+        misses = int(missed_by_label.get(label, 0))
+        y_true.extend([label] * support)
+        y_pred.extend(["not_fraud" if label == "fraud" else "fraud"] * misses)
+        y_pred.extend([label] * (support - misses))
+    return y_true, y_pred
+
+
+def render_overview(data: dict[str, Any]) -> None:
+    manifest = data["manifest"]
+    quality = data["quality"]
+    st.subheader("Ground-truth overview")
+    columns = st.columns(4)
+    columns[0].metric("Logical records", f"{manifest['requested_logical_records']:,}")
+    columns[1].metric("Customers", f"{manifest['customer_count']:,}")
+    columns[2].metric("Records checked", f"{quality['total_count']:,}")
+    columns[3].metric(
+        "Expected quarantined", f"{quality['expected_quarantined_count']:,}"
+    )
+
+    failures = {
+        "required field failures": quality["required_field_failure_count"],
+        "invalid records": quality["invalid_record_count"],
+        "referential integrity failures": quality[
+            "referential_integrity_failure_count"
+        ],
+        "future events": quality["future_event_count"],
+    }
+    st.caption("Quality failure counts")
+    show_bar_table(failures, total=quality["total_count"])
+
+
+def render_distributions(data: dict[str, Any]) -> None:
+    quality = data["quality"]
+    st.subheader("Distributions")
+    left, right = st.columns(2)
+    with left:
+        st.caption("Detected / found vs global generated cases")
+        dashboard = quality["dashboard_reference"]
+        records_by_domain = quality["all_generated_cases"]["records_by_domain"]
+        found = {
+            "customers": dashboard["customer_count"],
+            "accounts": dashboard["account_count"],
+            "transactions": dashboard["transaction_count"],
+            "fraud events": dashboard["fraud_event_count"],
+        }
+        global_cases = {
+            "customers": records_by_domain["customer_core"],
+            "accounts": records_by_domain["accounts"],
+            "transactions": records_by_domain["transactions"],
+            "fraud events": records_by_domain["fraud"],
+        }
+        show_found_vs_global(found, global_cases)
+        st.caption("Detected / found vs global generated scenarios")
+        global_scenarios = quality["all_generated_cases"]["scenario_counts"]
+        found_scenarios = Counter(
+            scenario.get("label", "unknown") for scenario in data["scenarios"]
+        )
+        scenario_labels = {
+            "fraud": "fraud",
+            "anomaly": "anomaly",
+            "duplicate_payment": "duplicate",
+        }
+        show_found_vs_global(
+            {
+                scenario: found_scenarios.get(
+                    scenario_labels.get(scenario, scenario), 0
+                )
+                for scenario in global_scenarios
+            },
+            global_scenarios,
+        )
+    with right:
+        st.caption("Generator-injected issue rates — configuration, not results")
+        st.info(
+            "These rates control how often the generator injects each issue. They "
+            "do not mean that every generated issue was detected. Expected cases "
+            "use the 7,317-record observation base; observed cases come from the "
+            "quality ground truth."
+        )
+        show_bar_table(
+            data["manifest"]["quality_parameters"],
+            percent=True,
+            prediction_total=quality["total_count"],
+            observed_counts={
+                "duplicate_rate": quality["dashboard_reference"]["duplicate_count"],
+                "missing_rate": quality["required_field_failure_count"],
+                "malformed_rate": quality["invalid_record_count"],
+                "unknown_id_rate": quality["referential_integrity_failure_count"],
+            },
+        )
+
+
+def render_sources(sources: dict[str, dict[str, Any]]) -> None:
+    st.subheader("Source systems")
+    rows = [
+        {
+            "source": name,
+            "domain": details["domain"],
+            "formats": ", ".join(details["format"]),
+            "owner": details["owner"],
+            "identifier": details["identifier"],
+            "PII": details["contains_pii"],
+            "SLA": details["expected_sla"],
+        }
+        for name, details in sources.items()
+    ]
+    st.dataframe(rows, hide_index=True, width="stretch")
+
+
+def render_fraud(quality: dict[str, Any]) -> None:
+    st.subheader("Fraud detection ground truth")
+    metrics = fraud_metrics(quality)
+    st.caption(
+        "Metrics are recomputed with scikit-learn from the labelled cases and "
+        "misclassifications."
+    )
+    show_bar_table(metrics, percent=True)
+
+    y_true, y_pred = fraud_labels(quality)
+    matrix = confusion_matrix(y_true, y_pred, labels=["fraud", "not_fraud"])
+    total = len(y_true)
+    misclassified = quality["misclassification"]
+    summary_rows = []
+    for label in ["fraud", "not_fraud"]:
+        actual = sum(value == label for value in y_true)
+        predicted = sum(value == label for value in y_pred)
+        summary_rows.append({
+            "label": label,
+            "ground_truth": f"{actual}/{total} ({actual / total:.2%})",
+            "predicted": f"{predicted}/{total} ({predicted / total:.2%})",
+            "misclassified": (
+                    f"{misclassified['misclassified_by_label'].get(label, 0)}/{total}"
+            ),
+            "false_positive": str(int(matrix[1, 0])) if label == "fraud" else "—",
+            "false_negative": str(int(matrix[0, 1])) if label == "fraud" else "—",
+        })
+    total_misclassified = int(misclassified["misclassified_cases"])
+    summary_rows.append({
+        "label": "misclassified",
+        "ground_truth": "—",
+        "predicted": "—",
+        "misclassified": (
+            f"{total_misclassified}/{total} " f"({total_misclassified / total:.2%})"
+        ),
+        "false_positive": str(int(matrix[1, 0])),
+        "false_negative": str(int(matrix[0, 1])),
+    })
+    st.caption("Ground truth vs predicted cases")
+    st.dataframe(summary_rows, hide_index=True, width="stretch")
+
+    st.caption(
+        "Binary fraud classification confusion matrix — scenarios are shown "
+        "separately below (rows = actual, columns = predicted)."
+    )
+    matrix_figure = go.Figure(
+        go.Heatmap(
+            z=matrix,
+            x=["Predicted fraud", "Predicted not fraud"],
+            y=["Actual fraud", "Actual not fraud"],
+            text=matrix,
+            texttemplate="%{text}",
+            textfont={"size": 22},
+            colorscale=[[0, "#F3F6FA"], [1, "#2F6690"]],
+            showscale=False,
+            hovertemplate="%{y}<br>%{x}: %{z}<extra></extra>",
+        )
+    )
+    matrix_figure.update_layout(
+        height=320,
+        margin={"l": 0, "r": 0, "t": 10, "b": 0},
+        xaxis={"side": "top"},
+    )
+    st.plotly_chart(
+        matrix_figure, width="stretch", config={"displayModeBar": False}
+    )
+    st.caption("Misclassified scenarios")
+    st.dataframe(
+        quality["misclassification"]["misclassified_scenarios"],
+        hide_index=True,
+        width="stretch",
+    )
+
+
+st.set_page_config(page_title="Raw data ground truth", layout="wide")
+st.title("Raw data ground truth")
+st.caption(
+    "Quality expectations, distributions, and fraud-detection checks from "
+    "raw_dev/metadata"
+)
+
+raw_root = find_raw_root()
+try:
+    ground_truth = load_ground_truth(raw_root)
+except (FileNotFoundError, json.JSONDecodeError) as error:
+    st.error(f"Could not load ground truth from {raw_root}: {error}")
+    st.stop()
+
+render_overview(ground_truth)
+render_distributions(ground_truth)
+render_sources(ground_truth["sources"])
+render_fraud(ground_truth["quality"])
