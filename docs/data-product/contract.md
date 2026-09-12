@@ -17,3 +17,7 @@ Nullable source values remain nullable. Counts are zero when no related records 
 ## Batch and lineage access
 
 `GET /v1/batches/{batch_id}/lineage` returns the batch source, status, and the uploaded filenames and storage keys used to produce the batch.
+
+`GET /v1/summary` and `GET /v1/status` return aggregate counts and the latest batch update time. `GET /ready` checks database readiness. 
+
+When `API_KEY` is configured, `/v1/*` requests require the `X-API-Key` header.
