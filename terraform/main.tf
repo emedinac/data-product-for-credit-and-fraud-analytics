@@ -145,7 +145,10 @@ resource "google_monitoring_alert_policy" "freshness" {
       comparison      = "COMPARISON_GT"
       threshold_value = 86400
       duration        = "0s"
-      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_MAX" }
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_MAX"
+      }
     }
   }
 }
@@ -161,7 +164,11 @@ resource "google_monitoring_alert_policy" "quality" {
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "0s"
-      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_RATE" cross_series_reducer = "REDUCE_SUM" }
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
     }
   }
 }
@@ -177,7 +184,11 @@ resource "google_monitoring_alert_policy" "processing" {
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "0s"
-      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_RATE" cross_series_reducer = "REDUCE_SUM" }
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
     }
   }
 }
@@ -193,7 +204,10 @@ resource "google_monitoring_alert_policy" "volume" {
       comparison      = "COMPARISON_GT"
       threshold_value = 0.5
       duration        = "0s"
-      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_MAX" }
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_MAX"
+      }
     }
   }
 }
@@ -201,7 +215,11 @@ resource "google_monitoring_alert_policy" "volume" {
 resource "google_monitoring_uptime_check_config" "health" {
   display_name = "Customer Data Product health"
   timeout      = "10s"
-  http_check { path = "/health" port = 443 use_ssl = true }
+  http_check {
+    path    = "/health"
+    port    = 443
+    use_ssl = true
+  }
   monitored_resource {
     type   = "uptime_url"
     labels = { host = replace(google_cloud_run_v2_service.api.uri, "https://", "") }
@@ -219,7 +237,10 @@ resource "google_monitoring_alert_policy" "downtime" {
       comparison      = "COMPARISON_LT"
       threshold_value = 1
       duration        = "300s"
-      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_FRACTION_TRUE" }
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_FRACTION_TRUE"
+      }
     }
   }
 }

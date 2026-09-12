@@ -13,8 +13,8 @@ variable "container_image" {
 
 variable "db_password" {
   description = "Database password. Supply through a secure CI variable or Secret Manager workflow; do not commit it or put it in .env."
-  type      = string
-  sensitive = true
+  type        = string
+  sensitive   = true
 }
 
 variable "sql_tier" {
