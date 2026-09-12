@@ -18,6 +18,7 @@ class GroundTruthReport:
     labels_by_type: dict[str, int]
     subtypes: dict[str, int]
     records: list[GroundTruthLabel]
+    quality_ground_truth: dict[str, object]
 
 
 class LocalGroundTruthReader:
@@ -168,4 +169,15 @@ class LocalGroundTruthReader:
                 Counter(record.subtype for record in records if record.subtype)
             ),
             records=records,
+            quality_ground_truth=self._read_quality_ground_truth(),
         )
+
+    def _read_quality_ground_truth(self) -> dict[str, object]:
+        path = self.raw_root / "metadata" / "quality_ground_truth.json"
+        if not path.is_file():
+            return {}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}

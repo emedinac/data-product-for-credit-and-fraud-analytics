@@ -123,6 +123,7 @@ class GroundTruthResponse(BaseModel):
     labels_by_type: dict[str, int]
     subtypes: dict[str, int]
     records: list[GroundTruthRecord]
+    quality_ground_truth: dict[str, object] = Field(default_factory=dict)
 
 
 class QualityIssueResponse(BaseModel):
@@ -263,14 +264,16 @@ def router(
 
     @api.get("/quality", response_model=list[QualityIssueResponse])
     def get_quality(
+        batch_id: str | None = None,
         filename: str | None = None,
         issue_type: str | None = None,
         limit: int = 100,
     ) -> list[QualityIssueResponse]:
-        safe_limit = min(max(limit, 1), 500)
+        safe_limit = min(max(limit, 1), 5000)
         return [
             QualityIssueResponse(**issue)
             for issue in repository.get_quality_issues(
+                batch_id=batch_id,
                 filename=filename,
                 issue_type=issue_type,
                 limit=safe_limit,
@@ -299,6 +302,7 @@ def router(
                     GroundTruthRecord(**record.__dict__)
                     for record in report.records
                 ],
+                quality_ground_truth=report.quality_ground_truth,
             )
 
     return api

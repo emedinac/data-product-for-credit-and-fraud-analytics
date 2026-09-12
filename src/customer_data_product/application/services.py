@@ -50,7 +50,9 @@ class BatchService:
                 batch_id,
                 assessment.failures,
             )
-            raise ValueError("quality gate failed: " + ", ".join(assessment.failures))
+            # The batch remains available for quarantine inspection. The gate
+            # blocks snapshot publication, not ingestion of the raw batch.
+            return result
         self.publish_snapshot(batch_id)
         logger.info(
             "batch_process_completed batch_id=%s accepted=%s quarantined=%s",
@@ -98,7 +100,11 @@ class BatchService:
         assessment = assess_quality(result, self.quality_thresholds)
         self.batches.update_status(
             batch_id,
-            "LOADED" if assessment.status == "PASSED" else "QUALITY_FAILED",
+            (
+                "LOADED"
+                if assessment.status == "PASSED"
+                else "COMPLETED_WITH_QUALITY_ISSUES"
+            ),
             quality_status=assessment.status,
             quality_failure_reasons=list(assessment.failures),
         )

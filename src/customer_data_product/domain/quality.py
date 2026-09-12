@@ -67,6 +67,8 @@ def assess_quality(
         and freshness_seconds > thresholds.max_freshness_seconds
     ):
         failures.append("FRESHNESS")
+    if freshness_seconds is not None and freshness_seconds < 0:
+        failures.append("FUTURE_EVENT_TIME")
     return QualityAssessment(
         status="PASSED" if not failures else "FAILED",
         failures=tuple(failures),

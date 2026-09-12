@@ -91,7 +91,10 @@ class PostgresRepository:
             row = connection.execute(
                 """SELECT total_count FROM batches
                    WHERE batch_id <> %s AND total_count > 0
-                     AND status IN ('COMPLETED', 'LOADED', 'QUALITY_FAILED')
+                     AND status IN (
+                         'COMPLETED', 'LOADED', 'COMPLETED_WITH_QUALITY_ISSUES',
+                         'QUALITY_FAILED'
+                     )
                    ORDER BY updated_at DESC LIMIT 1""",
                 (batch_id,),
             ).fetchone()
@@ -392,7 +395,10 @@ class PostgresRepository:
                           source_event_max, freshness_seconds, duration_seconds,
                           volume_change_rate, updated_at
                    FROM batches
-                   WHERE status IN ('COMPLETED', 'LOADED', 'QUALITY_FAILED', 'FAILED')
+                   WHERE status IN (
+                       'COMPLETED', 'LOADED', 'COMPLETED_WITH_QUALITY_ISSUES',
+                       'QUALITY_FAILED', 'FAILED'
+                   )
                    ORDER BY updated_at DESC LIMIT 1"""
             ).fetchone()
         if row is None:
@@ -418,9 +424,14 @@ class PostgresRepository:
             }
         total = int(row["total_count"] or 0)
         denominator = total or 1
+        batch_status = (
+            "COMPLETED_WITH_QUALITY_ISSUES"
+            if row["status"] == "QUALITY_FAILED"
+            else row["status"]
+        )
         return {
             "batch_id": row["batch_id"],
-            "batch_status": row["status"],
+            "batch_status": batch_status,
             "quality_status": row["quality_status"],
             "quality_failure_reasons": list(row["quality_failure_reasons"] or []),
             "total_count": total,
@@ -448,12 +459,16 @@ class PostgresRepository:
 
     def get_quality_issues(
         self,
+        batch_id: str | None = None,
         filename: str | None = None,
         issue_type: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, object]]:
         clauses: list[str] = []
         values: list[object] = []
+        if batch_id:
+            clauses.append("batch_id = %s")
+            values.append(batch_id)
         if filename:
             clauses.append("filename = %s")
             values.append(filename)
