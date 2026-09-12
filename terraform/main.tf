@@ -131,6 +131,14 @@ resource "google_cloud_run_v2_service" "api" {
         value = google_storage_bucket.lake.name
       }
       env {
+        name  = "AUTH_AUDIENCE"
+        value = var.auth_audience
+      }
+      env {
+        name  = "AUTH_ROLE_BINDINGS"
+        value = var.auth_role_bindings
+      }
+      env {
         name  = "DATABASE_URL"
         value = "postgresql://customer@/customer_product?host=/cloudsql/${google_sql_database_instance.postgres.connection_name}"
       }
@@ -151,9 +159,10 @@ resource "google_cloud_run_v2_service" "api" {
   }
 }
 
-resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
+resource "google_cloud_run_v2_service_iam_member" "invoker" {
+  for_each = toset(var.invoker_members)
   name     = google_cloud_run_v2_service.api.name
   location = google_cloud_run_v2_service.api.location
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = each.value
 }
