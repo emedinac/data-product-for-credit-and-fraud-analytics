@@ -22,9 +22,13 @@ CREATE TABLE IF NOT EXISTS batch_files (
 
 CREATE TABLE IF NOT EXISTS customers (
     customer_id TEXT PRIMARY KEY,
+    first_name TEXT,
+    last_name TEXT,
+    date_of_birth DATE,
     status TEXT,
     customer_type TEXT,
     country TEXT,
+    city TEXT,
     registered_at TIMESTAMPTZ,
     batch_id TEXT NOT NULL REFERENCES batches(batch_id)
 );
@@ -49,6 +53,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     currency TEXT,
     transaction_type TEXT,
     status TEXT,
+    merchant_id TEXT,
+    merchant_category TEXT,
+    country TEXT,
     batch_id TEXT NOT NULL REFERENCES batches(batch_id)
 );
 
@@ -75,9 +82,13 @@ CREATE TABLE IF NOT EXISTS interactions (
 
 CREATE TABLE IF NOT EXISTS customer_snapshots (
     customer_id TEXT PRIMARY KEY REFERENCES customers(customer_id),
+    first_name TEXT,
+    last_name TEXT,
+    date_of_birth DATE,
     status TEXT,
     customer_type TEXT,
     country TEXT,
+    city TEXT,
     account_count INTEGER NOT NULL,
     total_credit_limit NUMERIC,
     total_balance NUMERIC,
@@ -100,3 +111,6 @@ CREATE TABLE IF NOT EXISTS quality_issues (
     issue_type TEXT NOT NULL,
     detail TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_quality_issues_batch_id
+    ON quality_issues (batch_id);

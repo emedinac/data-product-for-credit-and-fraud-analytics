@@ -145,15 +145,19 @@ class PostgresRepository:
         with self._connect() as connection:
             result = connection.execute(
                 """INSERT INTO customers
-                   (customer_id, status, customer_type, country,
-                    registered_at, batch_id)
-                   VALUES (%s, %s, %s, %s, %s, %s)
+                   (customer_id, first_name, last_name, date_of_birth, status,
+                    customer_type, country, city, registered_at, batch_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (customer_id) DO NOTHING""",
                 (
                     record.customer_id,
+                    record.first_name,
+                    record.last_name,
+                    record.date_of_birth,
                     record.status,
                     record.customer_type,
                     record.country,
+                    record.city,
                     record.registered_at,
                     batch_id,
                 ),
@@ -186,8 +190,9 @@ class PostgresRepository:
             result = connection.execute(
                 """INSERT INTO transactions
                    (transaction_id, customer_id, account_id, event_time,
-                    amount, currency, transaction_type, status, batch_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    amount, currency, transaction_type, status, merchant_id,
+                    merchant_category, country, batch_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (transaction_id) DO NOTHING""",
                 (
                     record.transaction_id,
@@ -198,6 +203,9 @@ class PostgresRepository:
                     record.currency,
                     record.transaction_type,
                     record.status,
+                    record.merchant_id,
+                    record.merchant_category,
+                    record.country,
                     batch_id,
                 ),
             )
@@ -248,12 +256,14 @@ class PostgresRepository:
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO customer_snapshots
-                   (customer_id, status, customer_type, country, account_count,
-                    total_credit_limit, total_balance, transaction_count,
+                   (customer_id, first_name, last_name, date_of_birth, status,
+                    customer_type, country, city, account_count, total_credit_limit,
+                    total_balance, transaction_count,
                     transaction_amount, declined_transaction_count,
                     fraud_event_count, confirmed_fraud_count, interaction_count,
                     last_transaction_at, batch_id, updated_at)
-                   SELECT c.customer_id, c.status, c.customer_type, c.country,
+                   SELECT c.customer_id, c.first_name, c.last_name, c.date_of_birth,
+                          c.status, c.customer_type, c.country, c.city,
                           (SELECT count(*) FROM accounts a
                            WHERE a.customer_id = c.customer_id),
                           (SELECT coalesce(sum(a.credit_limit), 0)
@@ -280,8 +290,11 @@ class PostgresRepository:
                           %s, now()
                    FROM customers c
                    ON CONFLICT (customer_id) DO UPDATE SET
+                     first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name,
+                     date_of_birth = EXCLUDED.date_of_birth,
                      status = EXCLUDED.status, customer_type = EXCLUDED.customer_type,
-                     country = EXCLUDED.country, account_count = EXCLUDED.account_count,
+                     country = EXCLUDED.country, city = EXCLUDED.city,
+                     account_count = EXCLUDED.account_count,
                      total_credit_limit = EXCLUDED.total_credit_limit,
                      total_balance = EXCLUDED.total_balance,
                      transaction_count = EXCLUDED.transaction_count,
