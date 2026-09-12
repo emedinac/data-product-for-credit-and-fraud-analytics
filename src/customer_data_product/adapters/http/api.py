@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
@@ -35,9 +35,13 @@ class UploadResponse(BaseModel):
 
 class CustomerResponse(BaseModel):
     customer_id: str
+    first_name: str | None
+    last_name: str | None
+    date_of_birth: date | None
     status: str | None
     customer_type: str | None
     country: str | None
+    city: str | None
     account_count: int
     total_credit_limit: float | None
     total_balance: float | None

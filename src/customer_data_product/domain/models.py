@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 
@@ -10,6 +10,10 @@ class Customer:
     customer_type: str | None
     country: str | None
     registered_at: datetime | None
+    first_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: date | None = None
+    city: str | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,9 @@ class Transaction:
     currency: str | None
     transaction_type: str | None
     status: str | None
+    merchant_id: str | None = None
+    merchant_category: str | None = None
+    country: str | None = None
 
 
 @dataclass(frozen=True)

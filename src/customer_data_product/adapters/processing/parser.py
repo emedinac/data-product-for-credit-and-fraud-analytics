@@ -1,7 +1,7 @@
 import csv
 import json
 from collections.abc import Iterator, Mapping
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,13 @@ def text(value: Any, *, upper: bool = False) -> str | None:
     return result.upper() if upper else result.lower()
 
 
+def profile_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    result = str(value).strip()
+    return result or None
+
+
 def label(value: Any, *, upper: bool = False) -> str | None:
     result = normalize_name(value)
     return result.upper() if result is not None and upper else result
@@ -71,6 +78,11 @@ def parse_datetime(value: Any) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def parse_date(value: Any) -> date | None:
+    parsed = parse_datetime(value)
+    return parsed.date() if parsed is not None else None
 
 
 def decimal(value: Any) -> Decimal | None:
@@ -110,11 +122,19 @@ def parse_customers(path: Path) -> Iterator[tuple[int, Customer | None, str | No
         yield (
             line_number,
             Customer(
-                str(customer_id),
-                label(first(raw, "status", "state")),
-                label(first(raw, "customer_type", "customerType")),
-                text(first(raw, "country", "country_code"), upper=True),
-                parse_datetime(first(raw, "registered_at", "registration_date")),
+                customer_id=str(customer_id),
+                status=label(first(raw, "status", "state", "customer_status")),
+                customer_type=label(first(raw, "customer_type", "customerType")),
+                country=text(first(raw, "country", "country_code"), upper=True),
+                registered_at=parse_datetime(
+                    first(raw, "registered_at", "registration_date")
+                ),
+                first_name=profile_text(first(raw, "first_name", "firstName")),
+                last_name=profile_text(first(raw, "last_name", "lastName")),
+                date_of_birth=parse_date(
+                    first(raw, "date_of_birth", "dateOfBirth", "birth_date")
+                ),
+                city=profile_text(first(raw, "city")),
             ),
             None,
         )
@@ -181,17 +201,34 @@ def parse_transactions(
         yield (
             line_number,
             Transaction(
-                str(transaction_id),
-                str(customer_id),
-                str(account_id),
-                event_time,
-                amount,
-                label(
-                    first(amount_fields, "currency", "ccy", "currency_code"),
+                transaction_id=str(transaction_id),
+                customer_id=str(customer_id),
+                account_id=str(account_id),
+                event_time=event_time,
+                amount=amount,
+                currency=label(
+                    first(amount_fields, "currency", "ccy", "currency_code")
+                    or first(raw, "currency", "ccy", "currency_code"),
                     upper=True,
                 ),
-                label(first(nested, "type", "transaction_type")),
-                label(first(raw, "status", "state")),
+                transaction_type=label(
+                    first(nested, "type", "transaction_type")
+                    or first(raw, "transaction_type", "type")
+                ),
+                status=label(first(raw, "status", "state")),
+                merchant_id=profile_text(
+                    first(nested, "merchant_id", "merchantId")
+                    or first(raw, "merchant_id", "merchantId")
+                ),
+                merchant_category=label(
+                    first(nested, "merchant_category", "merchantCategory")
+                    or first(raw, "merchant_category", "merchantCategory")
+                ),
+                country=label(
+                    first(nested, "country", "country_code")
+                    or first(raw, "country", "country_code"),
+                    upper=True,
+                ),
             ),
             None,
         )
