@@ -17,7 +17,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     repository.initialize()
     processor = LocalProcessor(storage, repository)
     publisher = LocalEventPublisher()
-    service = BatchService(repository, storage, publisher, processor)
+    service = BatchService(
+        repository,
+        storage,
+        publisher,
+        processor,
+        settings.quality_thresholds,
+    )
     app = FastAPI(title="Customer Data Product", version="0.1.0")
     app.include_router(
         router(

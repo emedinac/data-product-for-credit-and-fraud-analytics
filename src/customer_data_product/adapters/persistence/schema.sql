@@ -8,6 +8,16 @@ CREATE TABLE IF NOT EXISTS batches (
     quarantined_count INTEGER NOT NULL DEFAULT 0,
     error_count INTEGER NOT NULL DEFAULT 0,
     snapshot_count INTEGER NOT NULL DEFAULT 0,
+    total_count INTEGER NOT NULL DEFAULT 0,
+    required_field_failure_count INTEGER NOT NULL DEFAULT 0,
+    referential_integrity_failure_count INTEGER NOT NULL DEFAULT 0,
+    source_event_min TIMESTAMPTZ,
+    source_event_max TIMESTAMPTZ,
+    freshness_seconds DOUBLE PRECISION,
+    duration_seconds DOUBLE PRECISION,
+    volume_change_rate DOUBLE PRECISION,
+    quality_status TEXT NOT NULL DEFAULT 'PENDING',
+    quality_failure_reasons TEXT[] NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

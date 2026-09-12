@@ -132,6 +132,27 @@ class QualityIssueResponse(BaseModel):
     detail: str
 
 
+class QualitySummaryResponse(BaseModel):
+    batch_id: str | None
+    batch_status: str
+    quality_status: str
+    quality_failure_reasons: list[str]
+    total_count: int
+    accepted_count: int
+    duplicate_count: int
+    quarantined_count: int
+    required_field_completeness: float
+    referential_integrity_failure_rate: float
+    duplicate_rate: float
+    quarantine_rate: float
+    freshness_seconds: float | None
+    duration_seconds: float | None
+    volume_change_rate: float | None
+    source_event_min: datetime | None
+    source_event_max: datetime | None
+    updated_at: datetime | None
+
+
 def router(
     service: BatchService,
     repository: PostgresRepository,
@@ -180,7 +201,10 @@ def router(
     def process_batch(batch_id: str) -> BatchResponse:
         if repository.get_batch(batch_id) is None:
             raise HTTPException(status_code=404, detail="batch not found")
-        service.process(batch_id)
+        try:
+            service.process(batch_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         batch = repository.get_batch(batch_id)
         assert batch is not None
         return BatchResponse(**batch)
@@ -252,6 +276,10 @@ def router(
                 limit=safe_limit,
             )
         ]
+
+    @api.get("/quality/summary", response_model=QualitySummaryResponse)
+    def get_quality_summary() -> QualitySummaryResponse:
+        return QualitySummaryResponse(**repository.get_quality_summary())
 
     if enable_ground_truth:
 

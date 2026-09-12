@@ -86,7 +86,18 @@ class PostgresRepository:
                 "SELECT * FROM batches WHERE batch_id = %s", (batch_id,)
             ).fetchone()
 
-    def update_status(self, batch_id: str, status: str, **counts: int) -> None:
+    def get_previous_total(self, batch_id: str) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT total_count FROM batches
+                   WHERE batch_id <> %s AND total_count > 0
+                     AND status IN ('COMPLETED', 'LOADED', 'QUALITY_FAILED')
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (batch_id,),
+            ).fetchone()
+        return int(row["total_count"]) if row is not None else None
+
+    def update_status(self, batch_id: str, status: str, **counts: object) -> None:
         allowed = {
             key: value
             for key, value in counts.items()
@@ -98,6 +109,16 @@ class PostgresRepository:
                 "quarantined_count",
                 "error_count",
                 "snapshot_count",
+                "total_count",
+                "required_field_failure_count",
+                "referential_integrity_failure_count",
+                "source_event_min",
+                "source_event_max",
+                "freshness_seconds",
+                "duration_seconds",
+                "volume_change_rate",
+                "quality_status",
+                "quality_failure_reasons",
             }
         }
         assignments = ["status = %s", "updated_at = now()"]
@@ -360,6 +381,70 @@ class PostgresRepository:
             int(latest["quarantined_count"]) if latest else 0
         )
         return values
+
+    def get_quality_summary(self) -> dict[str, object]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT batch_id, status, quality_status, quality_failure_reasons,
+                          total_count, accepted_count, duplicate_count,
+                          quarantined_count, required_field_failure_count,
+                          referential_integrity_failure_count, source_event_min,
+                          source_event_max, freshness_seconds, duration_seconds,
+                          volume_change_rate, updated_at
+                   FROM batches
+                   WHERE status IN ('COMPLETED', 'LOADED', 'QUALITY_FAILED', 'FAILED')
+                   ORDER BY updated_at DESC LIMIT 1"""
+            ).fetchone()
+        if row is None:
+            return {
+                "batch_id": None,
+                "batch_status": "EMPTY",
+                "quality_status": "PENDING",
+                "quality_failure_reasons": [],
+                "total_count": 0,
+                "accepted_count": 0,
+                "duplicate_count": 0,
+                "quarantined_count": 0,
+                "required_field_completeness": 1.0,
+                "referential_integrity_failure_rate": 0.0,
+                "duplicate_rate": 0.0,
+                "quarantine_rate": 0.0,
+                "freshness_seconds": None,
+                "duration_seconds": None,
+                "volume_change_rate": None,
+                "source_event_min": None,
+                "source_event_max": None,
+                "updated_at": None,
+            }
+        total = int(row["total_count"] or 0)
+        denominator = total or 1
+        return {
+            "batch_id": row["batch_id"],
+            "batch_status": row["status"],
+            "quality_status": row["quality_status"],
+            "quality_failure_reasons": list(row["quality_failure_reasons"] or []),
+            "total_count": total,
+            "accepted_count": int(row["accepted_count"] or 0),
+            "duplicate_count": int(row["duplicate_count"] or 0),
+            "quarantined_count": int(row["quarantined_count"] or 0),
+            "required_field_completeness": max(
+                0.0,
+                1.0
+                - int(row["required_field_failure_count"] or 0) / denominator,
+            ),
+            "referential_integrity_failure_rate": int(
+                row["referential_integrity_failure_count"] or 0
+            )
+            / denominator,
+            "duplicate_rate": int(row["duplicate_count"] or 0) / denominator,
+            "quarantine_rate": int(row["quarantined_count"] or 0) / denominator,
+            "freshness_seconds": row["freshness_seconds"],
+            "duration_seconds": row["duration_seconds"],
+            "volume_change_rate": row["volume_change_rate"],
+            "source_event_min": row["source_event_min"],
+            "source_event_max": row["source_event_max"],
+            "updated_at": row["updated_at"],
+        }
 
     def get_quality_issues(
         self,

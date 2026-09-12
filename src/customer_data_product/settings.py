@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from customer_data_product.domain.quality import QualityThresholds
+
 
 class Settings(BaseSettings):
     database_url: str = (
@@ -14,6 +16,25 @@ class Settings(BaseSettings):
     port: int = 8000
     backend_url: str = "http://localhost:8000"
     api_key: str | None = None
+    max_quarantine_rate: float = 0.05
+    max_duplicate_rate: float = 0.05
+    max_referential_integrity_failure_rate: float = 0.0
+    min_required_field_completeness: float = 0.99
+    max_volume_change_rate: float = 0.50
+    max_freshness_seconds: float = 86400.0
+
+    @property
+    def quality_thresholds(self) -> QualityThresholds:
+        return QualityThresholds(
+            max_quarantine_rate=self.max_quarantine_rate,
+            max_duplicate_rate=self.max_duplicate_rate,
+            max_referential_integrity_failure_rate=(
+                self.max_referential_integrity_failure_rate
+            ),
+            min_required_field_completeness=self.min_required_field_completeness,
+            max_volume_change_rate=self.max_volume_change_rate,
+            max_freshness_seconds=self.max_freshness_seconds,
+        )
 
     model_config = SettingsConfigDict(
         env_file=".env",

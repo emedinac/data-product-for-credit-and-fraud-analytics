@@ -1,4 +1,6 @@
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any, cast
 
 from customer_data_product.adapters.persistence.postgres import PostgresRepository
@@ -10,8 +12,17 @@ from customer_data_product.adapters.processing.parser import (
     parse_transactions,
 )
 from customer_data_product.adapters.storage.local_filesystem import LocalObjectStorage
+from customer_data_product.observability import emit_metric
 
 logger = logging.getLogger(__name__)
+
+
+def _count(counts: dict[str, object], key: str) -> int:
+    return cast(int, counts[key])
+
+
+def _increment(counts: dict[str, object], key: str) -> None:
+    counts[key] = _count(counts, key) + 1
 
 
 class LocalProcessor:
@@ -22,47 +33,54 @@ class LocalProcessor:
         self.repository = repository
 
     def process_batch(
-        self, batch_id: str, *, publish_snapshot: bool = True
-    ) -> dict[str, int]:
+        self, batch_id: str
+    ) -> dict[str, object]:
+        started = time.monotonic()
         batch = self.repository.get_batch(batch_id)
         if batch is None:
             raise ValueError("batch not found")
         if batch["status"] == "COMPLETED":
             return {
+                "total_count": cast(int, batch["total_count"]),
                 "accepted_count": cast(int, batch["accepted_count"]),
                 "duplicate_count": cast(int, batch["duplicate_count"]),
                 "quarantined_count": cast(int, batch["quarantined_count"]),
                 "error_count": cast(int, batch["error_count"]),
+                "required_field_failure_count": cast(
+                    int, batch["required_field_failure_count"]
+                ),
+                "referential_integrity_failure_count": cast(
+                    int, batch["referential_integrity_failure_count"]
+                ),
+                "freshness_seconds": batch["freshness_seconds"],
+                "volume_change_rate": batch["volume_change_rate"],
                 "snapshot_count": cast(int, batch["snapshot_count"]),
             }
         self.repository.update_status(batch_id, "PROCESSING")
-        counts = {
+        counts: dict[str, object] = {
             "accepted_count": 0,
             "duplicate_count": 0,
             "quarantined_count": 0,
             "error_count": 0,
+            "required_field_failure_count": 0,
+            "referential_integrity_failure_count": 0,
+        }
+        source_times: list[datetime] = []
+        parsers = {
+            "customer": (parse_customers, self.repository.save_customer),
+            "account": (parse_accounts, self.repository.save_account),
+            "transaction": (parse_transactions, self.repository.save_transaction),
+            "fraud": (parse_fraud, self.repository.save_fraud_event),
+            "interaction": (parse_interactions, self.repository.save_interaction),
         }
         for batch_file in self.repository.list_files(batch_id):
             path = self.storage.get(batch_file.storage_key)
             name = batch_file.filename.lower()
-            records: Any
-            saver: Any
-            if "customer" in name:
-                records = parse_customers(path)
-                saver = self.repository.save_customer
-            elif "account" in name:
-                records = parse_accounts(path)
-                saver = self.repository.save_account
-            elif "transaction" in name:
-                records = parse_transactions(path)
-                saver = self.repository.save_transaction
-            elif "fraud" in name:
-                records = parse_fraud(path)
-                saver = self.repository.save_fraud_event
-            elif "interaction" in name:
-                records = parse_interactions(path)
-                saver = self.repository.save_interaction
-            else:
+            handler: tuple[Any, Any] | None = next(
+                (value for source, value in parsers.items() if source in name),
+                None,
+            )
+            if handler is None:
                 self.repository.add_quality_issue(
                     batch_id,
                     batch_file.filename,
@@ -70,22 +88,40 @@ class LocalProcessor:
                     "UNSUPPORTED_SOURCE",
                     "core source filename not recognized",
                 )
-                counts["quarantined_count"] += 1
+                _increment(counts, "quarantined_count")
                 continue
+            parser, saver = handler
+            records = parser(path)
             for line_number, record, error in records:
                 if error or record is None:
+                    _increment(counts, "error_count")
+                    issue_type = (
+                        "REQUIRED_FIELD_MISSING"
+                        if error and "missing" in error
+                        else "INVALID_RECORD"
+                    )
                     self.repository.add_quality_issue(
                         batch_id,
                         batch_file.filename,
                         line_number,
-                        "INVALID_RECORD",
+                        issue_type,
                         error or "invalid record",
                     )
-                    counts["quarantined_count"] += 1
+                    _increment(counts, "quarantined_count")
+                    if issue_type == "REQUIRED_FIELD_MISSING":
+                        _increment(counts, "required_field_failure_count")
                     continue
+                event_time = getattr(record, "event_time", None)
+                if event_time is None:
+                    event_time = getattr(record, "registered_at", None)
+                if event_time is None:
+                    event_time = getattr(record, "opened_at", None)
+                if event_time is not None:
+                    source_times.append(event_time)
                 try:
                     inserted = saver(record, batch_id)
                 except Exception as exc:
+                    _increment(counts, "error_count")
                     logger.warning(
                         "record_rejected batch_id=%s file=%s line=%s reason=%s",
                         batch_id,
@@ -97,18 +133,59 @@ class LocalProcessor:
                         batch_id,
                         batch_file.filename,
                         line_number,
-                        "REFERENTIAL_OR_DATABASE_ERROR",
+                        (
+                            "REFERENTIAL_INTEGRITY_FAILURE"
+                            if "foreign key" in str(exc).lower()
+                            or "referential" in str(exc).lower()
+                            else "DATABASE_ERROR"
+                        ),
                         str(exc),
                     )
-                    counts["quarantined_count"] += 1
+                    _increment(counts, "quarantined_count")
+                    is_referential = (
+                        "foreign key" in str(exc).lower()
+                        or "referential" in str(exc).lower()
+                    )
+                    if is_referential:
+                        _increment(counts, "referential_integrity_failure_count")
                     continue
-                counts["accepted_count" if inserted else "duplicate_count"] += 1
-        if publish_snapshot:
-            counts["snapshot_count"] = self.repository.publish_customer_snapshot(
-                batch_id
-            )
-            status = "COMPLETED"
-        else:
-            status = "LOADED"
-        self.repository.update_status(batch_id, status, **counts)
+                key = "accepted_count" if inserted else "duplicate_count"
+                _increment(counts, key)
+        ended_at = datetime.now(timezone.utc)
+        source_min = min(source_times) if source_times else None
+        source_max = max(source_times) if source_times else None
+        freshness = (
+            (ended_at - source_max).total_seconds() if source_max is not None else None
+        )
+        total = sum(
+            _count(counts, key)
+            for key in ("accepted_count", "duplicate_count", "quarantined_count")
+        )
+        previous_total = self.repository.get_previous_total(batch_id)
+        volume_change = (
+            abs(total - previous_total) / previous_total
+            if previous_total
+            else None
+        )
+        counts["total_count"] = total
+        counts["source_event_min"] = source_min
+        counts["source_event_max"] = source_max
+        counts["freshness_seconds"] = freshness
+        counts["duration_seconds"] = time.monotonic() - started
+        counts["volume_change_rate"] = volume_change
+        self.repository.update_status(batch_id, "LOADED", **counts)
+        emit_metric(
+            "batch_processing",
+            batch_id=batch_id,
+            duration_seconds=counts["duration_seconds"],
+            total_count=total,
+            accepted_count=counts["accepted_count"],
+            duplicate_count=counts["duplicate_count"],
+            quarantined_count=counts["quarantined_count"],
+            freshness_seconds=freshness,
+            quality_failures=(
+                _count(counts, "required_field_failure_count")
+                + _count(counts, "referential_integrity_failure_count")
+            ),
+        )
         return counts
