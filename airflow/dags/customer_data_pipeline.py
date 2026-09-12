@@ -80,9 +80,23 @@ def customer_data_product_pipeline() -> None:
 
     @task
     def quality_gate(batch_id: str, result: dict[str, int]) -> str:
-        # Stop downstream publishing when the batch contains no valid records.
+        # Thresholds are configurable; 1.0 preserves the prototype behavior.
+        total = sum(
+            result[key]
+            for key in ("accepted_count", "duplicate_count", "quarantined_count")
+        )
+        quarantine_rate = (
+            result["quarantined_count"] / total if total else 1.0
+        )
+        duplicate_rate = result["duplicate_count"] / total if total else 0.0
+        max_quarantine_rate = float(os.environ.get("MAX_QUARANTINE_RATE", "1.0"))
+        max_duplicate_rate = float(os.environ.get("MAX_DUPLICATE_RATE", "1.0"))
         if result["accepted_count"] == 0 and result["quarantined_count"] > 0:
             raise ValueError("batch contained no accepted records")
+        if quarantine_rate > max_quarantine_rate:
+            raise ValueError(f"quarantine rate {quarantine_rate:.2%} exceeds threshold")
+        if duplicate_rate > max_duplicate_rate:
+            raise ValueError(f"duplicate rate {duplicate_rate:.2%} exceeds threshold")
         return batch_id
 
     @task
