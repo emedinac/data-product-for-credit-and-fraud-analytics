@@ -157,6 +157,7 @@ import argparse
 import csv
 import json
 import random
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -2296,6 +2297,7 @@ def write_quality_ground_truth(
     duplicate_scenarios: list[str],
 ) -> None:
     """Write expected quality outcomes for the files loaded by the demo."""
+    from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
     from customer_data_product.adapters.processing.parser import (
         parse_accounts,
         parse_customers,
@@ -2375,6 +2377,78 @@ def write_quality_ground_truth(
         if event_time is not None and event_time > datetime.now(timezone.utc):
             future_events += 1
 
+    def unique_records(records: list[object], key: str) -> tuple[list[object], int]:
+        seen: set[object] = set()
+        unique: list[object] = []
+        duplicates = 0
+        for record in records:
+            value = getattr(record, key, None)
+            if value in seen:
+                duplicates += 1
+                continue
+            seen.add(value)
+            unique.append(record)
+        return unique, duplicates
+
+    accepted_customers, customer_duplicates = unique_records(
+        parsed["customers"], "customer_id"
+    )
+    accepted_customer_ids = {record.customer_id for record in accepted_customers}
+    accepted_accounts, account_duplicates = unique_records(
+        [
+            record
+            for record in parsed["accounts"]
+            if record.customer_id in accepted_customer_ids
+        ],
+        "account_id",
+    )
+    accepted_account_ids = {record.account_id for record in accepted_accounts}
+    referential_failures += sum(
+        record.customer_id in customer_ids
+        and record.account_id in account_ids
+        and record.account_id not in accepted_account_ids
+        for record in parsed["transactions"]
+    )
+    accepted_transactions, transaction_duplicates = unique_records(
+        [
+            record
+            for record in parsed["transactions"]
+            if record.customer_id in accepted_customer_ids
+            and record.account_id in accepted_account_ids
+        ],
+        "transaction_id",
+    )
+    accepted_transaction_ids = {
+        record.transaction_id for record in accepted_transactions
+    }
+    accepted_fraud, fraud_duplicates = unique_records(
+        [
+            record
+            for record in parsed["fraud"]
+            if record.customer_id in accepted_customer_ids
+            and (
+                not record.transaction_id
+                or record.transaction_id in accepted_transaction_ids
+            )
+        ],
+        "event_id",
+    )
+    expected_duplicate_count = (
+        customer_duplicates
+        + account_duplicates
+        + transaction_duplicates
+        + fraud_duplicates
+    )
+    expected_accepted_count = sum(
+        len(records)
+        for records in (
+            accepted_customers,
+            accepted_accounts,
+            accepted_transactions,
+            accepted_fraud,
+        )
+    )
+
     files_by_domain: dict[str, int] = {}
     records_by_domain: dict[str, int] = {}
     duplicate_files: list[str] = []
@@ -2397,6 +2471,110 @@ def write_quality_ground_truth(
             count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
         records_by_domain[domain] = records_by_domain.get(domain, 0) + count
 
+    classification_report = LocalGroundTruthReader(output).read()
+    misclassified_records = [
+        record for record in classification_report.records if record.misclassified
+    ]
+    binary_records = [
+        (
+            "fraud" if record.label == "fraud" else "not_fraud",
+            record.predicted_label,
+        )
+        for record in classification_report.records
+    ]
+    classification_metrics: dict[str, object] = {}
+    for label in ("fraud", "not_fraud"):
+        true_positive = sum(
+            expected == label and predicted == label
+            for expected, predicted in binary_records
+        )
+        false_positive = sum(
+            expected != label and predicted == label
+            for expected, predicted in binary_records
+        )
+        false_negative = sum(
+            expected == label and predicted != label
+            for expected, predicted in binary_records
+        )
+        support = sum(expected == label for expected, _ in binary_records)
+        precision = (
+            true_positive / (true_positive + false_positive)
+            if true_positive + false_positive
+            else 0.0
+        )
+        recall = (
+            true_positive / (true_positive + false_negative)
+            if true_positive + false_negative
+            else 0.0
+        )
+        f1_score = (
+            2 * precision * recall / (precision + recall)
+            if precision + recall
+            else 0.0
+        )
+        classification_metrics[label] = {
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1_score,
+            "support": support,
+        }
+
+    total_support = classification_report.total
+    all_subtypes = sorted(
+        {
+            record.subtype
+            for record in classification_report.records
+            if record.subtype
+        }
+    )
+    misclassified_by_subtype = {subtype: 0 for subtype in all_subtypes}
+    for record in misclassified_records:
+        if record.subtype:
+            misclassified_by_subtype[record.subtype] += 1
+    weighted_metrics = {
+        metric: sum(
+            classification_metrics[label][metric]
+            * classification_metrics[label]["support"]
+            for label in ("fraud", "not_fraud")
+        )
+        / total_support
+        for metric in ("precision", "recall", "f1_score")
+    }
+    macro_metrics = {
+        metric: sum(
+            classification_metrics[label][metric]
+            for label in ("fraud", "not_fraud")
+        )
+        / 2
+        for metric in ("precision", "recall", "f1_score")
+    }
+    misclassification = {
+        "total_cases": classification_report.total,
+        "correct_cases": classification_report.total - len(misclassified_records),
+        "misclassified_cases": len(misclassified_records),
+        "accuracy": (
+            (classification_report.total - len(misclassified_records))
+            / classification_report.total
+            if classification_report.total
+            else None
+        ),
+        "misclassified_by_label": {},
+        "misclassified_by_subtype": misclassified_by_subtype,
+        "misclassified_scenarios": [
+            {
+                "scenario_id": record.scenario_id,
+                "label": record.label,
+                "subtype": record.subtype,
+                "predicted_label": record.predicted_label,
+            }
+            for record in misclassified_records
+        ],
+    }
+    for record in misclassified_records:
+        misclassification["misclassified_by_label"][record.label] = (
+            misclassification["misclassified_by_label"].get(record.label, 0) + 1
+        )
+
     report = {
         "scope": [path.name for path, _ in sources],
         "total_count": total,
@@ -2407,6 +2585,46 @@ def write_quality_ground_truth(
         "expected_quarantined_count": (
             required_failures + invalid_records + referential_failures
         ),
+        "dashboard_reference": {
+            "customer_count": len(accepted_customers),
+            "account_count": len(accepted_accounts),
+            "transaction_count": len(accepted_transactions),
+            "fraud_event_count": len(accepted_fraud),
+            "confirmed_fraud_count": sum(
+                record.confirmed for record in accepted_fraud
+            ),
+            "accepted_count": expected_accepted_count,
+            "duplicate_count": expected_duplicate_count,
+            "quarantined_count": (
+                required_failures + invalid_records + referential_failures
+            ),
+            "customer_status_counts": dict(
+                Counter(
+                    record.status
+                    for record in accepted_customers
+                    if record.status is not None
+                )
+            ),
+            "transaction_status_counts": dict(
+                Counter(
+                    record.status
+                    for record in accepted_transactions
+                    if record.status is not None
+                )
+            ),
+        },
+        "misclassification": misclassification,
+        "classification_metrics": {
+            **classification_metrics,
+            "accuracy": (
+                (classification_report.total - len(misclassified_records))
+                / classification_report.total
+                if classification_report.total
+                else 0.0
+            ),
+            "macro_avg": {**macro_metrics, "support": total_support},
+            "weighted_avg": {**weighted_metrics, "support": total_support},
+        },
         "all_generated_cases": {
             "files_by_domain": files_by_domain,
             "records_by_domain": records_by_domain,
