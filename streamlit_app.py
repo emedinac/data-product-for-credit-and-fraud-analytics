@@ -97,7 +97,10 @@ def observation_file(kind: str, values: dict[str, Any]) -> tuple[str, bytes, str
                     "currency": values["currency"],
                     "amount": values["amount"],
                 },
+                "merchant_id": values["merchant_id"],
+                "merchant_category": values["merchant_category"],
             },
+            "country": values["country"],
             "status": values["status"],
         }
         return (
@@ -148,6 +151,13 @@ def render_observation_form() -> None:
         values: dict[str, Any] = {}
         if kind == "Customer":
             values["customer_id"] = st.text_input("Customer ID")
+            values["first_name"] = st.text_input("First name")
+            values["last_name"] = st.text_input("Last name")
+            birth_date = st.date_input(
+                "Date of birth", value=date(1990, 1, 1)
+            )
+            values["date_of_birth"] = birth_date.isoformat()
+            values["city"] = st.text_input("City")
             values["status"] = st.selectbox("Status", CUSTOMER_STATUSES)
             values["customer_type"] = st.selectbox(
                 "Customer type", CUSTOMER_TYPES
@@ -181,6 +191,11 @@ def render_observation_form() -> None:
             )
             values["currency"] = st.text_input(
                 "Currency", value="USD", max_chars=3
+            ).upper()
+            values["merchant_id"] = st.text_input("Merchant ID")
+            values["merchant_category"] = st.text_input("Merchant category")
+            values["country"] = st.text_input(
+                "Transaction country", value="US", max_chars=2
             ).upper()
             values["type"] = st.selectbox("Transaction type", TRANSACTION_TYPES)
             values["status"] = st.selectbox(
