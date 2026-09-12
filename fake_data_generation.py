@@ -2288,6 +2288,142 @@ def write_manifest(
 # ============================================================
 
 
+def write_quality_ground_truth(
+    output: Path,
+    quality_challenges: dict[str, list[str]],
+    fraud_scenarios: list[str],
+    anomaly_scenarios: list[str],
+    duplicate_scenarios: list[str],
+) -> None:
+    """Write expected quality outcomes for the files loaded by the demo."""
+    from customer_data_product.adapters.processing.parser import (
+        parse_accounts,
+        parse_customers,
+        parse_fraud,
+        parse_transactions,
+    )
+
+    sources = [
+        (output / "customer_core" / "customers_00000.json", parse_customers),
+        (output / "accounts" / "accounts_00000.csv", parse_accounts),
+        (output / "transactions" / "transactions_00000.jsonl", parse_transactions),
+        (output / "fraud" / "fraud_00000.jsonl", parse_fraud),
+    ]
+    parsed: dict[str, list[object]] = {
+        "customers": [],
+        "accounts": [],
+        "transactions": [],
+        "fraud": [],
+    }
+    total = 0
+    required_failures = 0
+    invalid_records = 0
+    source_records: list[tuple[str, int, object | None, str | None]] = []
+    for path, parser in sources:
+        if not path.exists():
+            continue
+        for line_number, record, error in parser(path):
+            total += 1
+            source_records.append((path.name, line_number, record, error))
+            if error or record is None:
+                if error and "missing" in error:
+                    required_failures += 1
+                else:
+                    invalid_records += 1
+                continue
+            if path.name.startswith("customers"):
+                parsed["customers"].append(record)
+            elif path.name.startswith("accounts"):
+                parsed["accounts"].append(record)
+            elif path.name.startswith("transactions"):
+                parsed["transactions"].append(record)
+            else:
+                parsed["fraud"].append(record)
+
+    customer_ids = {record.customer_id for record in parsed["customers"]}
+    account_ids = {record.account_id for record in parsed["accounts"]}
+    transaction_ids = {
+        record.transaction_id for record in parsed["transactions"]
+    }
+    referential_failures = 0
+    future_events = 0
+    for filename, line_number, record, error in source_records:
+        if error or record is None:
+            continue
+        if filename.startswith("accounts"):
+            if getattr(record, "customer_id", None) not in customer_ids:
+                referential_failures += 1
+            continue
+        if filename.startswith("transactions"):
+            if (
+                getattr(record, "account_id", None) not in account_ids
+                or getattr(record, "customer_id", None) not in customer_ids
+            ):
+                referential_failures += 1
+        elif filename.startswith("fraud"):
+            transaction_id = getattr(record, "transaction_id", None)
+            if (
+                getattr(record, "customer_id", None) not in customer_ids
+                or (transaction_id and transaction_id not in transaction_ids)
+            ):
+                referential_failures += 1
+        event_time = getattr(record, "event_time", None)
+        if event_time is None:
+            event_time = getattr(record, "registered_at", None)
+        if event_time is None:
+            event_time = getattr(record, "opened_at", None)
+        if event_time is not None and event_time > datetime.now(timezone.utc):
+            future_events += 1
+
+    files_by_domain: dict[str, int] = {}
+    records_by_domain: dict[str, int] = {}
+    duplicate_files: list[str] = []
+    for path in output.rglob("*"):
+        if not path.is_file() or path.parent.name in {"metadata", "ground_truth"}:
+            continue
+        domain = path.relative_to(output).parts[0]
+        files_by_domain[domain] = files_by_domain.get(domain, 0) + 1
+        if "_REDELIVERY_" in path.name:
+            duplicate_files.append(str(path.relative_to(output)))
+        if path.suffix.lower() == ".json":
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                count = len(value.get("records", [])) if isinstance(value, dict) else 1
+            except (OSError, json.JSONDecodeError):
+                count = 1
+        elif path.suffix.lower() == ".csv":
+            count = max(0, sum(1 for _ in path.open(encoding="utf-8")) - 1)
+        else:
+            count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
+        records_by_domain[domain] = records_by_domain.get(domain, 0) + count
+
+    report = {
+        "scope": [path.name for path, _ in sources],
+        "total_count": total,
+        "required_field_failure_count": required_failures,
+        "invalid_record_count": invalid_records,
+        "referential_integrity_failure_count": referential_failures,
+        "future_event_count": future_events,
+        "expected_quarantined_count": (
+            required_failures + invalid_records + referential_failures
+        ),
+        "all_generated_cases": {
+            "files_by_domain": files_by_domain,
+            "records_by_domain": records_by_domain,
+            "duplicate_delivery_files": sorted(duplicate_files),
+            "scenario_counts": {
+                "fraud": len(fraud_scenarios),
+                "anomaly": len(anomaly_scenarios),
+                "duplicate_payment": len(duplicate_scenarios),
+            },
+            "quality_challenges": quality_challenges,
+        },
+    }
+    (output / "metadata" / "quality_ground_truth.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
+
+
 def main():
     args = parse_args()
 
@@ -3265,6 +3401,14 @@ def main():
             f,
             indent=2,
         )
+
+    write_quality_ground_truth(
+        output,
+        quality_challenges,
+        fraud_scenarios,
+        anomaly_scenarios,
+        duplicate_scenarios,
+    )
 
     # ========================================================
     # SUMMARY
