@@ -1,5 +1,11 @@
 # Data Semantics
 
+- `first_name`, `last_name`, and `city` are trimmed source values and remain
+  nullable.
+- `date_of_birth` is stored and returned as a nullable calendar date.
+- Transaction `merchant_id` is preserved as a trimmed source value.
+- Transaction `merchant_category` is normalized to lowercase snake case.
+- Transaction `country` is normalized to an uppercase country label.
 - Customer status and customer type are normalized to lowercase snake case.
 - Country and currency labels are normalized to uppercase.
 - `account_count` counts persisted accounts for the customer.
