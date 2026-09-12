@@ -38,3 +38,9 @@ variable "auth_role_bindings" {
   type        = string
   default     = "{}"
 }
+
+variable "notification_email" {
+  description = "Optional email address for Cloud Monitoring alerts."
+  type        = string
+  default     = null
+}

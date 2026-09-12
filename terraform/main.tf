@@ -20,6 +20,7 @@ resource "google_project_service" "services" {
     "sqladmin.googleapis.com",
     "storage.googleapis.com",
     "secretmanager.googleapis.com",
+    "monitoring.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -102,6 +103,127 @@ resource "google_secret_manager_secret_iam_member" "db_password_access" {
   member    = "serviceAccount:${google_service_account.api.email}"
 }
 
+resource "google_project_iam_member" "monitoring_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_service_account" "grafana" {
+  account_id   = "customer-data-grafana"
+  display_name = "Customer Data Grafana viewer"
+}
+
+resource "google_project_iam_member" "grafana_viewer" {
+  project = var.project_id
+  role    = "roles/monitoring.viewer"
+  member  = "serviceAccount:${google_service_account.grafana.email}"
+}
+
+resource "google_monitoring_notification_channel" "email" {
+  count        = var.notification_email == null ? 0 : 1
+  display_name = "Customer Data Product alerts"
+  type         = "email"
+  labels       = { email_address = var.notification_email }
+}
+
+locals {
+  notification_channels = var.notification_email == null ? [] : [
+    google_monitoring_notification_channel.email[0].id
+  ]
+  metric_prefix = "workload.googleapis.com/customer_data_product_"
+}
+
+resource "google_monitoring_alert_policy" "freshness" {
+  display_name          = "Customer Data Product freshness"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Freshness exceeds 24 hours"
+    condition_threshold {
+      filter          = "metric.type=\"${local.metric_prefix}freshness_seconds\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 86400
+      duration        = "0s"
+      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_MAX" }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "quality" {
+  display_name          = "Customer Data Product quality failure"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Quality gate failed"
+    condition_threshold {
+      filter          = "metric.type=\"${local.metric_prefix}quality_failures_total\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_RATE" cross_series_reducer = "REDUCE_SUM" }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "processing" {
+  display_name          = "Customer Data Product processing failure"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Processing failed"
+    condition_threshold {
+      filter          = "metric.type=\"${local.metric_prefix}processing_failures_total\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_RATE" cross_series_reducer = "REDUCE_SUM" }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "volume" {
+  display_name          = "Customer Data Product volume anomaly"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Volume change exceeds 50 percent"
+    condition_threshold {
+      filter          = "metric.type=\"${local.metric_prefix}volume_change_ratio\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0.5
+      duration        = "0s"
+      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_MAX" }
+    }
+  }
+}
+
+resource "google_monitoring_uptime_check_config" "health" {
+  display_name = "Customer Data Product health"
+  timeout      = "10s"
+  http_check { path = "/health" port = 443 use_ssl = true }
+  monitored_resource {
+    type   = "uptime_url"
+    labels = { host = replace(google_cloud_run_v2_service.api.uri, "https://", "") }
+  }
+}
+
+resource "google_monitoring_alert_policy" "downtime" {
+  display_name          = "Customer Data Product downtime"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Health check failed"
+    condition_threshold {
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" resource.type=\"uptime_url\""
+      comparison      = "COMPARISON_LT"
+      threshold_value = 1
+      duration        = "300s"
+      aggregations { alignment_period = "300s" per_series_aligner = "ALIGN_FRACTION_TRUE" }
+    }
+  }
+}
+
 resource "google_cloud_run_v2_service" "api" {
   name                = "customer-data-api"
   location            = var.region
@@ -129,6 +251,10 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "STORAGE_BUCKET"
         value = google_storage_bucket.lake.name
+      }
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
       }
       env {
         name  = "AUTH_AUDIENCE"

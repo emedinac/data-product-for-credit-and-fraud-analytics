@@ -13,3 +13,7 @@ output "storage_bucket" {
 output "cloud_sql_connection_name" {
   value = google_sql_database_instance.postgres.connection_name
 }
+
+output "grafana_viewer_service_account" {
+  value = google_service_account.grafana.email
+}
