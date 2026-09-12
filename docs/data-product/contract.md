@@ -41,7 +41,9 @@ The customer data product SLA is a maximum freshness of 24 hours: a successful b
 
 ## Batch and lineage access
 
-`GET /v1/batches/{batch_id}/lineage` returns the batch source, status, and the uploaded filenames and storage keys used to produce the batch.
+`GET /v1/batches/{batch_id}/lineage` returns the batch source, status, uploaded
+filenames and storage keys, and field-level source and transformation lineage
+for the customer snapshot.
 
 `GET /v1/summary` and `GET /v1/status` return aggregate counts and the latest batch update time. `GET /ready` checks database readiness. 
 
