@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     port: int = 8000
     backend_url: str = "http://localhost:8000"
     api_key: str | None = None
+    backend_api_key: str | None = None
     max_quarantine_rate: float = 0.05
     max_duplicate_rate: float = 0.05
     max_referential_integrity_failure_rate: float = 0.0
