@@ -358,14 +358,24 @@ def render_ground_truth() -> None:
     st.write(f"Matching cases: {len(records)}")
     st.dataframe(display_records, width="stretch")
 
-    st.caption("Full case evidence")
-    for record in records:
-        customer = record.get("customer_id") or "unknown customer"
-        fraud_state = "TRUE" if record["confirmed"] else "FALSE"
+    if records:
+        st.caption("Full case evidence")
+        records_by_id = {
+            record["scenario_id"]: record for record in records
+        }
+        selected_scenario = st.selectbox(
+            "Select one case to inspect",
+            list(records_by_id),
+        )
+        selected_record = records_by_id[selected_scenario]
+        customer = selected_record.get("customer_id") or "unknown customer"
+        fraud_state = "TRUE" if selected_record["confirmed"] else "FALSE"
         with st.expander(
-            f"{customer} — {record['scenario_id']} — confirmed fraud: {fraud_state}"
+            f"{customer} — {selected_scenario} — "
+            f"confirmed fraud: {fraud_state}",
+            expanded=True,
         ):
-            st.json(record)
+            st.json(selected_record)
 
 
 st.set_page_config(page_title="Customer Data Product", layout="wide")
