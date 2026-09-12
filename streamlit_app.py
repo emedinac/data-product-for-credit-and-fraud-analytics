@@ -296,6 +296,13 @@ def render_ground_truth() -> None:
     columns[2].metric("Missing", ground_truth["evidence_missing"])
 
     records = ground_truth["records"]
+    fraud_only = st.checkbox(
+        "Show confirmed fraud cases only",
+        value=True,
+        help="Filter to ground-truth records labelled as fraud.",
+    )
+    if fraud_only:
+        records = [record for record in records if record["label"] == "fraud"]
     evidence_scope = st.selectbox(
         "Cases to display",
         ["Missing", "Found", "All"],
@@ -337,13 +344,28 @@ def render_ground_truth() -> None:
         ]
     display_records = []
     for record in records:
-        display_record = dict(record)
-        display_record["status"] = (
-            "Found" if display_record.pop("evidence_found") else "Missing"
-        )
+        display_record = {
+            "scenario_id": record["scenario_id"],
+            "customer_id": record.get("customer_id"),
+            "transaction_ids": ", ".join(record.get("transaction_ids", [])),
+            "label": record["label"],
+            "subtype": record["subtype"],
+            "confirmed_fraud": record["confirmed"],
+            "evidence_found": record["evidence_found"],
+            "event_types": ", ".join(record.get("event_types", [])),
+        }
         display_records.append(display_record)
     st.write(f"Matching cases: {len(records)}")
     st.dataframe(display_records, width="stretch")
+
+    st.caption("Full case evidence")
+    for record in records:
+        customer = record.get("customer_id") or "unknown customer"
+        fraud_state = "TRUE" if record["confirmed"] else "FALSE"
+        with st.expander(
+            f"{customer} — {record['scenario_id']} — confirmed fraud: {fraud_state}"
+        ):
+            st.json(record)
 
 
 st.set_page_config(page_title="Customer Data Product", layout="wide")

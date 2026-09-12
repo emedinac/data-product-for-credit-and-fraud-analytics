@@ -103,6 +103,10 @@ class GroundTruthRecord(BaseModel):
     subtype: str | None
     confirmed: bool
     evidence_found: bool
+    customer_id: str | None = None
+    transaction_ids: list[str] = Field(default_factory=list)
+    event_types: list[str] = Field(default_factory=list)
+    evidence_records: list[dict[str, object]] = Field(default_factory=list)
 
 
 class GroundTruthResponse(BaseModel):

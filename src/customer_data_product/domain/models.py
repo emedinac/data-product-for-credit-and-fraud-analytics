@@ -78,3 +78,7 @@ class GroundTruthLabel:
     subtype: str | None
     confirmed: bool
     evidence_found: bool
+    customer_id: str | None = None
+    transaction_ids: tuple[str, ...] = ()
+    event_types: tuple[str, ...] = ()
+    evidence_records: tuple[dict[str, object], ...] = ()
