@@ -45,4 +45,4 @@ The customer data product SLA is a maximum freshness of 24 hours: a successful b
 
 `GET /v1/summary` and `GET /v1/status` return aggregate counts and the latest batch update time. `GET /ready` checks database readiness. 
 
-When `API_KEY` is configured, `/v1/*` requests require the `X-API-Key` header.
+All `/v1/*` requests require a valid OAuth bearer token. Cloud Run IAM controls service invocation, and application roles are `reader`, `operator`, `pii_reader`, and `admin`. The customer endpoint redacts first name, last name, date of birth, and city unless the caller has `pii_reader` or `admin`.
