@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
@@ -77,6 +77,7 @@ class SummaryResponse(BaseModel):
     quarantined_count: int
     last_batch_id: str | None
     last_batch_status: str | None
+    last_batch_updated_at: datetime | None
     latest_accepted_count: int
     latest_duplicate_count: int
     latest_quarantined_count: int
@@ -124,8 +125,13 @@ def router(
     repository: PostgresRepository,
     ground_truth: LocalGroundTruthReader,
     enable_ground_truth: bool = False,
+    api_key: str | None = None,
 ) -> APIRouter:
-    api = APIRouter(prefix="/v1")
+    def authenticate(x_api_key: str | None = Header(default=None)) -> None:
+        if api_key and x_api_key != api_key:
+            raise HTTPException(status_code=401, detail="invalid API key")
+
+    api = APIRouter(prefix="/v1", dependencies=[Depends(authenticate)])
 
     @api.post("/batches", response_model=BatchResponse, status_code=201)
     def create_batch(request: BatchCreateRequest) -> BatchResponse:
@@ -208,6 +214,10 @@ def router(
     @api.get("/summary", response_model=SummaryResponse)
     def get_summary() -> SummaryResponse:
         return SummaryResponse(**repository.get_summary())
+
+    @api.get("/status", response_model=SummaryResponse)
+    def get_status() -> SummaryResponse:
+        return get_summary()
 
     @api.get(
         "/summary/distributions", response_model=SummaryDistributionsResponse

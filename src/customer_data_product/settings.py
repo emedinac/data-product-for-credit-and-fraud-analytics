@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     enable_ground_truth: bool = False
     port: int = 8000
     backend_url: str = "http://localhost:8000"
+    api_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

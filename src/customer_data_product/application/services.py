@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -8,6 +9,8 @@ from customer_data_product.application.ports import (
     ObjectStorage,
 )
 from customer_data_product.domain.models import BatchFile
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,13 +35,38 @@ class BatchService:
         return record
 
     def process(self, batch_id: str) -> dict[str, int]:
+        logger.info("batch_process_started batch_id=%s", batch_id)
         self.publisher.publish(batch_id)
-        result = self.processor.process_batch(batch_id)
+        try:
+            result = self.processor.process_batch(batch_id)
+        except Exception:
+            self.batches.update_status(batch_id, "FAILED")
+            logger.exception("batch_process_failed batch_id=%s", batch_id)
+            raise
+        logger.info(
+            "batch_process_completed batch_id=%s accepted=%s quarantined=%s",
+            batch_id,
+            result["accepted_count"],
+            result["quarantined_count"],
+        )
         return result
 
     def load(self, batch_id: str) -> dict[str, int]:
+        logger.info("batch_load_started batch_id=%s", batch_id)
         self.publisher.publish(batch_id)
-        return self.processor.process_batch(batch_id, publish_snapshot=False)
+        try:
+            result = self.processor.process_batch(batch_id, publish_snapshot=False)
+        except Exception:
+            self.batches.update_status(batch_id, "FAILED")
+            logger.exception("batch_load_failed batch_id=%s", batch_id)
+            raise
+        logger.info(
+            "batch_load_completed batch_id=%s accepted=%s quarantined=%s",
+            batch_id,
+            result["accepted_count"],
+            result["quarantined_count"],
+        )
+        return result
 
     def publish_snapshot(self, batch_id: str) -> int:
         snapshot_count = self.batches.publish_customer_snapshot(batch_id)

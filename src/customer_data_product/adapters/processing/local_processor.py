@@ -1,4 +1,5 @@
-from typing import Any
+import logging
+from typing import Any, cast
 
 from customer_data_product.adapters.persistence.postgres import PostgresRepository
 from customer_data_product.adapters.processing.parser import (
@@ -9,6 +10,8 @@ from customer_data_product.adapters.processing.parser import (
     parse_transactions,
 )
 from customer_data_product.adapters.storage.local_filesystem import LocalObjectStorage
+
+logger = logging.getLogger(__name__)
 
 
 class LocalProcessor:
@@ -24,6 +27,14 @@ class LocalProcessor:
         batch = self.repository.get_batch(batch_id)
         if batch is None:
             raise ValueError("batch not found")
+        if batch["status"] == "COMPLETED":
+            return {
+                "accepted_count": cast(int, batch["accepted_count"]),
+                "duplicate_count": cast(int, batch["duplicate_count"]),
+                "quarantined_count": cast(int, batch["quarantined_count"]),
+                "error_count": cast(int, batch["error_count"]),
+                "snapshot_count": cast(int, batch["snapshot_count"]),
+            }
         self.repository.update_status(batch_id, "PROCESSING")
         counts = {
             "accepted_count": 0,
@@ -75,6 +86,13 @@ class LocalProcessor:
                 try:
                     inserted = saver(record, batch_id)
                 except Exception as exc:
+                    logger.warning(
+                        "record_rejected batch_id=%s file=%s line=%s reason=%s",
+                        batch_id,
+                        batch_file.filename,
+                        line_number,
+                        exc,
+                    )
                     self.repository.add_quality_issue(
                         batch_id,
                         batch_file.filename,

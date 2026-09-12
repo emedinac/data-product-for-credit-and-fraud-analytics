@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from customer_data_product.adapters.events import LocalEventPublisher
 from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
@@ -25,12 +25,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repository,
             LocalGroundTruthReader(settings.raw_root),
             enable_ground_truth=settings.enable_ground_truth,
+            api_key=settings.api_key,
         )
     )
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/ready")
+    def ready() -> dict[str, str]:
+        try:
+            repository.check_connection()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail="database is not ready"
+            ) from exc
+        return {"status": "ready"}
 
     return app
 

@@ -37,10 +37,33 @@ class PostgresRepository:
     def _connect(self) -> _ConnectionContext:
         return _ConnectionContext(self._connection)
 
+    def check_connection(self) -> None:
+        with self._connect() as connection:
+            connection.execute("SELECT 1")
+
     def initialize(self) -> None:
         schema = Path(__file__).with_name("schema.sql").read_text()
+        migration_dir = Path(__file__).with_name("migrations")
         with self._connect() as connection:
             connection.execute(schema)
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version TEXT PRIMARY KEY,
+                    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )"""
+            )
+            for migration in sorted(migration_dir.glob("*.sql")):
+                version = migration.name
+                applied = connection.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = %s",
+                    (version,),
+                ).fetchone()
+                if applied is None:
+                    connection.execute(migration.read_text())
+                    connection.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (%s)",
+                        (version,),
+                    )
             connection.execute(
                 "ALTER TABLE batches ADD COLUMN IF NOT EXISTS "
                 "snapshot_count INTEGER NOT NULL DEFAULT 0"
@@ -306,11 +329,14 @@ class PostgresRepository:
                 values[name] = int(row["value"]) if row is not None else 0
             latest = connection.execute(
                 """SELECT batch_id, status, accepted_count, duplicate_count,
-                          quarantined_count FROM batches
+                          quarantined_count, updated_at FROM batches
                    ORDER BY updated_at DESC LIMIT 1"""
             ).fetchone()
         values["last_batch_id"] = latest["batch_id"] if latest else None
         values["last_batch_status"] = latest["status"] if latest else None
+        values["last_batch_updated_at"] = (
+            latest["updated_at"] if latest else None
+        )
         values["latest_accepted_count"] = (
             int(latest["accepted_count"]) if latest else 0
         )
