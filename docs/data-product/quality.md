@@ -40,4 +40,9 @@ Failed quality gates do not discard the batch or return an ingestion error from 
 - Fraud and interaction counts count persisted related records. 
  
  
-The prototype does not calculate utilization, apply historical customer state, or provide point-in-time ML features. 
+Customer and account records are upserted when a later batch contains changed
+state. Each successful publication stores an immutable customer-level portfolio
+snapshot in `customer_snapshot_history`, including balance, credit limit,
+utilization, delinquency, and status. Consumers can use the customer endpoint's
+`as_of` parameter to compare those values across batches; this is batch-level
+history rather than event-level account versioning.
