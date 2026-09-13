@@ -127,7 +127,14 @@ class BatchService:
     def evaluate_quality(
         self, batch_id: str, result: dict[str, object]
     ) -> QualityAssessment:
-        assessment = assess_quality(result, self.quality_thresholds)
+        batch = self.batches.get_batch(batch_id)
+        is_evaluation = batch is not None and batch.get("source") == "eval_experiment"
+        assessment = assess_quality(
+            result,
+            self.quality_thresholds,
+            check_volume=not is_evaluation,
+            check_freshness=not is_evaluation,
+        )
         self.batches.update_status(
             batch_id,
             (

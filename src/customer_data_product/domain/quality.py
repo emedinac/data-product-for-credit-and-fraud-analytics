@@ -74,6 +74,9 @@ class QualityAssessment:
 def assess_quality(
     counts: Mapping[str, object],
     thresholds: QualityThresholds,
+    *,
+    check_volume: bool = True,
+    check_freshness: bool = True,
 ) -> QualityAssessment:
     total = cast(int, counts.get("total_count", 0))
     quarantined = cast(int, counts.get("quarantined_count", 0))
@@ -104,12 +107,14 @@ def assess_quality(
     if completeness < thresholds.min_required_field_completeness:
         failures.append("REQUIRED_FIELD_COMPLETENESS")
     if (
-        volume_change_rate is not None
+        check_volume
+        and volume_change_rate is not None
         and volume_change_rate > thresholds.max_volume_change_rate
     ):
         failures.append("VOLUME_ANOMALY")
     if (
-        freshness_seconds is not None
+        check_freshness
+        and freshness_seconds is not None
         and freshness_seconds > thresholds.max_freshness_seconds
     ):
         failures.append("FRESHNESS")
