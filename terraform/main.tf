@@ -128,9 +128,12 @@ resource "google_monitoring_notification_channel" "email" {
 }
 
 locals {
-  notification_channels = var.notification_email == null ? [] : [
-    google_monitoring_notification_channel.email[0].id
-  ]
+  notification_channels = concat(
+    var.notification_channel_ids,
+    var.notification_email == null ? [] : [
+      google_monitoring_notification_channel.email[0].id
+    ],
+  )
   metric_prefix = "workload.googleapis.com/customer_data_product_"
 }
 
@@ -181,6 +184,87 @@ resource "google_monitoring_alert_policy" "processing" {
     display_name = "Processing failed"
     condition_threshold {
       filter          = "metric.type=\"${local.metric_prefix}processing_failures_total\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "source_schema_drift" {
+  display_name          = "Customer Data Product source schema drift"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Source records no longer match required fields"
+    condition_threshold {
+      filter          = "metric.type=\"${local.metric_prefix}source_schema_drift_total\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "pipeline_sla" {
+  display_name          = "Customer Data Product end-to-end SLA"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Published batch exceeded the 24-hour SLA"
+    condition_threshold {
+      filter          = "metric.type=\"${local.metric_prefix}sla_breaches_total\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "composer_health" {
+  count                 = var.composer_environment_name == null ? 0 : 1
+  display_name          = "Customer Data Product Airflow health"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Cloud Composer environment is unhealthy"
+    condition_threshold {
+      filter          = "resource.type=\"cloud_composer_environment\" metric.type=\"composer.googleapis.com/environment/healthy\" resource.label.environment_name=\"${var.composer_environment_name}\""
+      comparison      = "COMPARISON_LT"
+      threshold_value = 0.9
+      duration        = "14400s"
+      aggregations {
+        alignment_period   = "14400s"
+        per_series_aligner = "ALIGN_FRACTION_TRUE"
+      }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "composer_dependencies" {
+  count                 = var.composer_environment_name == null ? 0 : 1
+  display_name          = "Customer Data Product Airflow dependency failure"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Cloud Composer dependency check failed"
+    condition_threshold {
+      filter          = "resource.type=\"cloud_composer_environment\" metric.type=\"composer.googleapis.com/environment/health/dependency_check_count\" resource.label.environment_name=\"${var.composer_environment_name}\" metric.label.status!=\"OK\""
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "0s"

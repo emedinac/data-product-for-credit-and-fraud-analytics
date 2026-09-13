@@ -44,3 +44,15 @@ variable "notification_email" {
   type        = string
   default     = null
 }
+
+variable "notification_channel_ids" {
+  description = "Existing Cloud Monitoring notification-channel IDs for production alert routing (for example, PagerDuty or an incident-management webhook)."
+  type        = list(string)
+  default     = []
+}
+
+variable "composer_environment_name" {
+  description = "Optional Cloud Composer environment name. When set, Terraform creates Composer health and dependency-failure alerts without creating or managing the environment."
+  type        = string
+  default     = null
+}
