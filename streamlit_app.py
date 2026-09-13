@@ -59,9 +59,14 @@ def load_ground_truth(raw_root: Path) -> dict[str, Any]:
 
 def backend_get(path: str) -> tuple[Any | None, str | None]:
     backend_url = APP_SETTINGS.backend_url.rstrip("/")
+    token = (
+        APP_SETTINGS.local_auth_token
+        if APP_SETTINGS.auth_mode.lower() == "local"
+        else APP_SETTINGS.backend_token
+    )
     headers = (
-        {"Authorization": f"Bearer {APP_SETTINGS.backend_token}"}
-        if APP_SETTINGS.backend_token
+        {"Authorization": f"Bearer {token}"}
+        if token
         else {}
     )
     try:
@@ -133,6 +138,11 @@ def render_entity_counts(
 def render_production_dashboard() -> None:
     """Display live API and pipeline results, without ground-truth data."""
     st.caption("Live data from the API and the latest processed batch.")
+    token = (
+        APP_SETTINGS.local_auth_token
+        if APP_SETTINGS.auth_mode.lower() == "local"
+        else APP_SETTINGS.backend_token
+    )
     health, health_error = backend_get("/health")
     ready, ready_error = backend_get("/ready")
     summary, summary_error = backend_get("/v1/summary")
@@ -149,7 +159,7 @@ def render_production_dashboard() -> None:
     status_bottom = st.columns(2)
     status_bottom[0].metric(
         "Access control",
-        "OAuth token configured" if APP_SETTINGS.backend_token else "Not configured",
+        "Token configured" if token else "Not configured",
     )
     status_bottom[1].metric(
         "Batch status", quality.get("batch_status", "UNKNOWN") if quality else "UNKNOWN"

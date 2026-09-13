@@ -366,6 +366,8 @@ def router(
     auth_audience: str | None = None,
     auth_role_bindings: str = "",
     auth_consumer_entitlements: str = "",
+    auth_mode: str = "google",
+    local_auth_token: str | None = None,
 ) -> APIRouter:
     try:
         role_bindings = json.loads(auth_role_bindings) if auth_role_bindings else {}
@@ -388,6 +390,11 @@ def router(
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Bearer token required")
         token = authorization.removeprefix("Bearer ").strip()
+        if auth_mode.lower() == "local":
+            if not local_auth_token or token != local_auth_token:
+                raise HTTPException(status_code=401, detail="invalid local token")
+            subject = next(iter(role_bindings), "local-dev")
+            return {"email": subject, "sub": subject, "roles": []}
         try:
             from google.auth.transport import requests
             from google.oauth2 import id_token

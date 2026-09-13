@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     auth_audience: str | None = None
     auth_role_bindings: str = ""
     auth_consumer_entitlements: str = ""
+    auth_mode: str = "google"
+    local_auth_token: str | None = None
     max_quarantine_rate: float = 0.05
     max_duplicate_rate: float = 0.05
     max_referential_integrity_failure_rate: float = 0.0

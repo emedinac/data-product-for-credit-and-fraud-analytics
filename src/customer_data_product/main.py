@@ -28,6 +28,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             auth_audience=settings.auth_audience,
             auth_role_bindings=settings.auth_role_bindings,
             auth_consumer_entitlements=settings.auth_consumer_entitlements,
+            auth_mode=settings.auth_mode,
+            local_auth_token=settings.local_auth_token,
         )
     )
 
