@@ -1,0 +1,10 @@
+apiVersion: 1
+
+datasources:
+  - name: Google Cloud Monitoring
+    type: stackdriver
+    access: proxy
+    isDefault: true
+    jsonData:
+      defaultProject: ${GCP_PROJECT_ID}
+      authenticationType: gce

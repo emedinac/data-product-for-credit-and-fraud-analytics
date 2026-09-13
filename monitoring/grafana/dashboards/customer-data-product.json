@@ -1,0 +1,33 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "title": "Batch processing duration",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "customer_data_product_processing_duration_seconds", "refId": "A"}]
+    },
+    {
+      "title": "Freshness seconds",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [{"expr": "customer_data_product_freshness_seconds", "refId": "A"}]
+    },
+    {
+      "title": "Quality failures",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [{"expr": "increase(customer_data_product_quality_failures_total[1h])", "refId": "A"}]
+    },
+    {
+      "title": "Volume change ratio",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [{"expr": "customer_data_product_volume_change_ratio", "refId": "A"}]
+    }
+  ],
+  "schemaVersion": 39,
+  "title": "Customer Data Product",
+  "time": {"from": "now-24h", "to": "now"}
+}
