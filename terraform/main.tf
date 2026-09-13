@@ -193,6 +193,26 @@ resource "google_monitoring_alert_policy" "processing" {
   }
 }
 
+resource "google_monitoring_alert_policy" "api_errors" {
+  display_name          = "Customer Data Product API errors"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Cloud Run returned 5xx responses"
+    condition_threshold {
+      filter          = "metric.type=\"run.googleapis.com/request_count\" resource.type=\"cloud_run_revision\" metric.labels.response_code_class=\"5xx\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "300s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+}
+
 resource "google_monitoring_alert_policy" "volume" {
   display_name          = "Customer Data Product volume anomaly"
   combiner              = "OR"
