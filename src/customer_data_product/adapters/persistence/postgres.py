@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from customer_data_product.domain.models import (
     Account,
@@ -99,6 +100,14 @@ class PostgresRepository:
                 "snapshot_count INTEGER NOT NULL DEFAULT 0"
             )
             connection.execute(
+                "ALTER TABLE batches ADD COLUMN IF NOT EXISTS "
+                "distribution_profile JSONB NOT NULL DEFAULT '{}'::jsonb"
+            )
+            connection.execute(
+                "ALTER TABLE batches ADD COLUMN IF NOT EXISTS "
+                "distribution_shift_score DOUBLE PRECISION"
+            )
+            connection.execute(
                 "ALTER TABLE customer_snapshots ADD COLUMN IF NOT EXISTS "
                 "interaction_count INTEGER NOT NULL DEFAULT 0"
             )
@@ -172,6 +181,23 @@ class PostgresRepository:
             ).fetchone()
         return int(row["total_count"]) if row is not None else None
 
+    def get_previous_distribution_profile(
+        self, batch_id: str
+    ) -> dict[str, dict[str, int]] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT distribution_profile FROM batches
+                   WHERE batch_id <> %s AND total_count > 0
+                     AND distribution_profile <> '{}'::jsonb
+                     AND status IN (
+                         'COMPLETED', 'LOADED', 'COMPLETED_WITH_QUALITY_ISSUES',
+                         'QUALITY_FAILED'
+                     )
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (batch_id,),
+            ).fetchone()
+        return row["distribution_profile"] if row is not None else None
+
     def update_status(self, batch_id: str, status: str, **counts: object) -> None:
         allowed = {
             key: value
@@ -194,6 +220,8 @@ class PostgresRepository:
                 "volume_change_rate",
                 "quality_status",
                 "quality_failure_reasons",
+                "distribution_profile",
+                "distribution_shift_score",
                 "processing_started_at",
                 "processing_completed_at",
             }
@@ -202,7 +230,7 @@ class PostgresRepository:
         values: list[object] = [status]
         for key, value in allowed.items():
             assignments.append(f"{key} = %s")
-            values.append(value)
+            values.append(Jsonb(value) if key == "distribution_profile" else value)
         values.append(batch_id)
         with self._connect() as connection:
             connection.execute(
@@ -805,8 +833,7 @@ class PostgresRepository:
                 current["customers_increased_activity_30d"] or 0
             ),
             "average_transaction_amount_by_segment": {
-                str(row["label"]): float(row["value"])
-                for row in by_segment
+                str(row["label"]): float(row["value"]) for row in by_segment
             },
             "customers_with_outstanding_balance": int(
                 current["customers_with_outstanding_balance"] or 0

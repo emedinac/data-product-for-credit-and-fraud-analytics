@@ -31,6 +31,7 @@ from customer_data_product.domain.models import (
     FraudEvent,
     Transaction,
 )
+from customer_data_product.domain.quality import distribution_shift_scores
 from customer_data_product.observability import emit_metric
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,14 @@ def _count(counts: dict[str, object], key: str) -> int:
 
 def _increment(counts: dict[str, object], key: str) -> None:
     counts[key] = _count(counts, key) + 1
+
+
+def _profile(
+    profile: dict[str, dict[str, int]], dimension: str, value: str | None
+) -> None:
+    label = value or "unknown"
+    values = profile.setdefault(dimension, {})
+    values[label] = values.get(label, 0) + 1
 
 
 def _allowed_value_error(record: object) -> str | None:
@@ -86,9 +95,7 @@ class LocalProcessor:
         self.repository = repository
         self.currency_policy = currency_policy or CurrencyPolicy()
 
-    def process_batch(
-        self, batch_id: str
-    ) -> dict[str, object]:
+    def process_batch(self, batch_id: str) -> dict[str, object]:
         started = time.monotonic()
         batch = self.repository.get_batch(batch_id)
         if batch is None:
@@ -115,6 +122,7 @@ class LocalProcessor:
         self.repository.update_status(
             batch_id, "PROCESSING", processing_started_at=processing_started_at
         )
+        previous_profile = self.repository.get_previous_distribution_profile(batch_id)
         counts: dict[str, object] = {
             "accepted_count": 0,
             "duplicate_count": 0,
@@ -122,7 +130,11 @@ class LocalProcessor:
             "error_count": 0,
             "required_field_failure_count": 0,
             "referential_integrity_failure_count": 0,
+            "fraud_event_count": 0,
+            "confirmed_fraud_count": 0,
+            "accepted_transaction_count": 0,
         }
+        distribution_profile: dict[str, dict[str, int]] = {}
         source_times: list[datetime] = []
         parsers = {
             "customer": (parse_customers, self.repository.save_customer),
@@ -147,6 +159,7 @@ class LocalProcessor:
                     "UNSUPPORTED_SOURCE",
                     "core source filename not recognized",
                 )
+                emit_metric("quarantine_record", issue_type="UNSUPPORTED_SOURCE")
                 _increment(counts, "quarantined_count")
                 continue
             parser, saver = handler
@@ -169,6 +182,7 @@ class LocalProcessor:
                         issue_type,
                         error or "invalid record",
                     )
+                    emit_metric("quarantine_record", issue_type=issue_type)
                     _increment(counts, "quarantined_count")
                     if issue_type == "REQUIRED_FIELD_MISSING":
                         _increment(counts, "required_field_failure_count")
@@ -204,11 +218,18 @@ class LocalProcessor:
                         "INVALID_ALLOWED_VALUE",
                         allowed_error,
                     )
+                    emit_metric("quarantine_record", issue_type="INVALID_ALLOWED_VALUE")
                     continue
                 try:
                     inserted = saver(record, batch_id)
                 except Exception as exc:
                     _increment(counts, "error_count")
+                    issue_type = (
+                        "REFERENTIAL_INTEGRITY_FAILURE"
+                        if "foreign key" in str(exc).lower()
+                        or "referential" in str(exc).lower()
+                        else "DATABASE_ERROR"
+                    )
                     logger.warning(
                         "record_rejected batch_id=%s file=%s line=%s reason=%s",
                         batch_id,
@@ -220,14 +241,10 @@ class LocalProcessor:
                         batch_id,
                         batch_file.filename,
                         line_number,
-                        (
-                            "REFERENTIAL_INTEGRITY_FAILURE"
-                            if "foreign key" in str(exc).lower()
-                            or "referential" in str(exc).lower()
-                            else "DATABASE_ERROR"
-                        ),
+                        issue_type,
                         str(exc),
                     )
+                    emit_metric("quarantine_record", issue_type=issue_type)
                     _increment(counts, "quarantined_count")
                     is_referential = (
                         "foreign key" in str(exc).lower()
@@ -238,6 +255,26 @@ class LocalProcessor:
                     continue
                 key = "accepted_count" if inserted else "duplicate_count"
                 _increment(counts, key)
+                if inserted and isinstance(record, Transaction):
+                    _increment(counts, "accepted_transaction_count")
+                    _profile(distribution_profile, "transaction_status", record.status)
+                    _profile(
+                        distribution_profile, "transaction_country", record.country
+                    )
+                    _profile(
+                        distribution_profile,
+                        "merchant_category",
+                        record.merchant_category,
+                    )
+                elif inserted and isinstance(record, FraudEvent):
+                    _increment(counts, "fraud_event_count")
+                    if record.confirmed:
+                        _increment(counts, "confirmed_fraud_count")
+                    _profile(
+                        distribution_profile, "fraud_event_type", record.event_type
+                    )
+                elif inserted and isinstance(record, Customer):
+                    _profile(distribution_profile, "customer_status", record.status)
             if (
                 file_record_count > 0
                 and file_required_field_failures == file_record_count
@@ -260,9 +297,7 @@ class LocalProcessor:
         )
         previous_total = self.repository.get_previous_total(batch_id)
         volume_change = (
-            abs(total - previous_total) / previous_total
-            if previous_total
-            else None
+            abs(total - previous_total) / previous_total if previous_total else None
         )
         counts["total_count"] = total
         counts["source_event_min"] = source_min
@@ -271,6 +306,10 @@ class LocalProcessor:
         counts["duration_seconds"] = time.monotonic() - started
         counts["volume_change_rate"] = volume_change
         counts["processing_completed_at"] = datetime.now(timezone.utc)
+        shift_scores = distribution_shift_scores(distribution_profile, previous_profile)
+        distribution_shift = max(shift_scores.values(), default=0.0)
+        counts["distribution_profile"] = distribution_profile
+        counts["distribution_shift_score"] = distribution_shift
         self.repository.update_status(batch_id, "LOADED", **counts)
         emit_metric(
             "batch_processing",
@@ -285,5 +324,18 @@ class LocalProcessor:
                 _count(counts, "required_field_failure_count")
                 + _count(counts, "referential_integrity_failure_count")
             ),
+        )
+        emit_metric(
+            "fraud_batch",
+            batch_id=batch_id,
+            fraud_event_count=counts["fraud_event_count"],
+            confirmed_fraud_count=counts["confirmed_fraud_count"],
+            accepted_transaction_count=counts["accepted_transaction_count"],
+        )
+        emit_metric(
+            "distribution_shift",
+            batch_id=batch_id,
+            score=distribution_shift,
+            by_dimension=shift_scores,
         )
         return counts

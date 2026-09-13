@@ -59,9 +59,44 @@ processing_queue_depth = Gauge(
     "customer_data_product_processing_queue_depth",
     "Number of queued or retryable processing jobs.",
 )
+fraud_events = Counter(
+    "customer_data_product_fraud_events_total",
+    "Fraud events accepted in processed batches.",
+)
+confirmed_fraud_events = Counter(
+    "customer_data_product_confirmed_fraud_events_total",
+    "Confirmed fraud events accepted in processed batches.",
+)
+fraud_confirmation_rate = Gauge(
+    "customer_data_product_fraud_confirmation_rate",
+    "Confirmed fraud events divided by accepted fraud events in the latest batch.",
+)
+quarantined_records = Counter(
+    "customer_data_product_quarantined_records_total",
+    "Records rejected into quarantine during batch processing.",
+)
+quarantine_rate = Gauge(
+    "customer_data_product_quarantine_rate",
+    "Quarantined records divided by records examined in the latest batch.",
+)
+quarantine_issues = Counter(
+    "customer_data_product_quarantine_issues_total",
+    "Quarantined records by bounded issue type.",
+    labelnames=("issue_type",),
+)
+distribution_shift_score = Gauge(
+    "customer_data_product_distribution_shift_score",
+    "Maximum Jensen-Shannon divergence from the previous batch.",
+)
+distribution_shift_by_dimension = Gauge(
+    "customer_data_product_distribution_shift_by_dimension",
+    "Jensen-Shannon divergence from the previous batch by dimension.",
+    labelnames=("dimension",),
+)
 
 _otel_instruments: dict[str, Any] = {}
 _otel_values: dict[str, float] = {}
+_otel_distribution_shift_values: dict[str, float] = {}
 
 
 def _observable_value(name: str) -> Any:
@@ -71,13 +106,18 @@ def _observable_value(name: str) -> Any:
     return callback
 
 
+def _observable_distribution_shift(_options: Any) -> list[Observation]:
+    return [
+        Observation(value, {"dimension": dimension})
+        for dimension, value in _otel_distribution_shift_values.items()
+    ]
+
+
 def configure_cloud_monitoring(project_id: str | None) -> None:
     if not project_id or isinstance(metrics.get_meter_provider(), MeterProvider):
         return
     exporter = CloudMonitoringMetricsExporter(project_id=project_id)
-    provider = MeterProvider(
-        metric_readers=[PeriodicExportingMetricReader(exporter)]
-    )
+    provider = MeterProvider(metric_readers=[PeriodicExportingMetricReader(exporter)])
     metrics.set_meter_provider(provider)
     meter = metrics.get_meter("customer_data_product")
     _otel_instruments.update(
@@ -123,6 +163,32 @@ def configure_cloud_monitoring(project_id: str | None) -> None:
             "customer_data_product_processing_queue_depth",
             callbacks=[_observable_value("processing_queue_depth")],
         ),
+        fraud_events=meter.create_counter("customer_data_product_fraud_events_total"),
+        confirmed_fraud_events=meter.create_counter(
+            "customer_data_product_confirmed_fraud_events_total"
+        ),
+        fraud_confirmation_rate=meter.create_observable_gauge(
+            "customer_data_product_fraud_confirmation_rate",
+            callbacks=[_observable_value("fraud_confirmation_rate")],
+        ),
+        quarantined_records=meter.create_counter(
+            "customer_data_product_quarantined_records_total"
+        ),
+        quarantine_rate=meter.create_observable_gauge(
+            "customer_data_product_quarantine_rate",
+            callbacks=[_observable_value("quarantine_rate")],
+        ),
+        quarantine_issues=meter.create_counter(
+            "customer_data_product_quarantine_issues_total"
+        ),
+        distribution_shift_score=meter.create_observable_gauge(
+            "customer_data_product_distribution_shift_score",
+            callbacks=[_observable_value("distribution_shift_score")],
+        ),
+        distribution_shift_by_dimension=meter.create_observable_gauge(
+            "customer_data_product_distribution_shift_by_dimension",
+            callbacks=[_observable_distribution_shift],
+        ),
     )
 
 
@@ -143,6 +209,11 @@ def emit_metric(name: str, **fields: Any) -> None:
             volume = float(fields["volume_change_rate"])
             volume_change_ratio.set(volume)
             _otel_values["volume_change_ratio"] = volume
+        total = int(fields.get("total_count", 0))
+        quarantined = int(fields.get("quarantined_count", 0))
+        latest_quarantine_rate = quarantined / (total or 1)
+        quarantine_rate.set(latest_quarantine_rate)
+        _otel_values["quarantine_rate"] = latest_quarantine_rate
     elif name == "quality_gate" and fields.get("status") == "FAILED":
         quality_failures.inc()
         if "quality_failures" in _otel_instruments:
@@ -178,3 +249,43 @@ def emit_metric(name: str, **fields: Any) -> None:
         depth = float(fields.get("depth", 0))
         processing_queue_depth.set(depth)
         _otel_values["processing_queue_depth"] = depth
+    elif name == "fraud_batch":
+        events = int(fields.get("fraud_event_count", 0))
+        confirmed = int(fields.get("confirmed_fraud_count", 0))
+        rate = confirmed / (events or 1)
+        fraud_events.inc(events)
+        confirmed_fraud_events.inc(confirmed)
+        fraud_confirmation_rate.set(rate)
+        _otel_values["fraud_confirmation_rate"] = rate
+        if "fraud_events" in _otel_instruments:
+            _otel_instruments["fraud_events"].add(events)
+        if "confirmed_fraud_events" in _otel_instruments:
+            _otel_instruments["confirmed_fraud_events"].add(confirmed)
+    elif name == "quarantine_record":
+        allowed_issue_types = {
+            "UNSUPPORTED_SOURCE",
+            "REQUIRED_FIELD_MISSING",
+            "INVALID_RECORD",
+            "INVALID_ALLOWED_VALUE",
+            "REFERENTIAL_INTEGRITY_FAILURE",
+            "DATABASE_ERROR",
+        }
+        issue_type = str(fields.get("issue_type", "OTHER"))
+        if issue_type not in allowed_issue_types:
+            issue_type = "OTHER"
+        quarantined_records.inc()
+        quarantine_issues.labels(issue_type=issue_type).inc()
+        if "quarantined_records" in _otel_instruments:
+            _otel_instruments["quarantined_records"].add(1)
+        if "quarantine_issues" in _otel_instruments:
+            _otel_instruments["quarantine_issues"].add(1, {"issue_type": issue_type})
+    elif name == "distribution_shift":
+        score = float(fields.get("score", 0.0))
+        distribution_shift_score.set(score)
+        _otel_values["distribution_shift_score"] = score
+        for dimension, value in dict(fields.get("by_dimension", {})).items():
+            numeric_value = float(value)
+            distribution_shift_by_dimension.labels(dimension=dimension).set(
+                numeric_value
+            )
+            _otel_distribution_shift_values[dimension] = numeric_value

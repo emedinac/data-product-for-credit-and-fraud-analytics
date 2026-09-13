@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS batches (
     volume_change_rate DOUBLE PRECISION,
     quality_status TEXT NOT NULL DEFAULT 'PENDING',
     quality_failure_reasons TEXT[] NOT NULL DEFAULT '{}',
+    distribution_profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+    distribution_shift_score DOUBLE PRECISION,
     arrived_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     processing_started_at TIMESTAMPTZ,
     processing_completed_at TIMESTAMPTZ,

@@ -1,5 +1,51 @@
 from dataclasses import dataclass
+from math import log2
 from typing import Mapping, cast
+
+DistributionProfile = Mapping[str, Mapping[str, int]]
+
+
+def jensen_shannon_divergence(
+    current: Mapping[str, int], previous: Mapping[str, int]
+) -> float:
+    """Compare two categorical distributions with a bounded [0, 1] score."""
+    current_total = sum(max(value, 0) for value in current.values())
+    previous_total = sum(max(value, 0) for value in previous.values())
+    if current_total == 0 and previous_total == 0:
+        return 0.0
+    if current_total == 0 or previous_total == 0:
+        return 1.0
+
+    labels = set(current) | set(previous)
+    divergence = 0.0
+    for label in labels:
+        current_probability = max(current.get(label, 0), 0) / current_total
+        previous_probability = max(previous.get(label, 0), 0) / previous_total
+        midpoint = (current_probability + previous_probability) / 2
+        if current_probability:
+            divergence += (
+                0.5 * current_probability * log2(current_probability / midpoint)
+            )
+        if previous_probability:
+            divergence += (
+                0.5 * previous_probability * log2(previous_probability / midpoint)
+            )
+    return divergence
+
+
+def distribution_shift_scores(
+    current: DistributionProfile, previous: DistributionProfile | None
+) -> dict[str, float]:
+    """Return one JSD score per profiled categorical dimension."""
+    if previous is None:
+        return {}
+    dimensions = set(current) | set(previous)
+    return {
+        dimension: jensen_shannon_divergence(
+            current.get(dimension, {}), previous.get(dimension, {})
+        )
+        for dimension in dimensions
+    }
 
 
 @dataclass(frozen=True)
