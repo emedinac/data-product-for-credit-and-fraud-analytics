@@ -2,7 +2,7 @@
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def _failure_alert(context: dict[str, Any]) -> None:
+    from customer_data_product.observability import (
+        configure_cloud_monitoring,
+        emit_metric,
+    )
+    from customer_data_product.settings import Settings
+
+    configure_cloud_monitoring(Settings().gcp_project_id)
+    emit_metric("airflow_task_failure")
     task = context.get("task_instance")
     logger.error(
         "AIRFLOW_ALERT task failure dag_id=%s task_id=%s run_id=%s",
@@ -19,6 +27,18 @@ def _failure_alert(context: dict[str, Any]) -> None:
         getattr(task, "task_id", None),
         getattr(task, "run_id", None),
     )
+
+
+def _sla_miss_alert(*_: Any, **__: Any) -> None:
+    from customer_data_product.observability import (
+        configure_cloud_monitoring,
+        emit_metric,
+    )
+    from customer_data_product.settings import Settings
+
+    configure_cloud_monitoring(Settings().gcp_project_id)
+    emit_metric("sla_breach")
+    logger.error("AIRFLOW_ALERT pipeline SLA missed")
 
 # Core source folders currently supported by the ingestion pipeline.
 CORE_SOURCE_DIRECTORIES = (
@@ -67,6 +87,8 @@ def _service() -> Any:
     catchup=False,
     max_active_runs=1,
     on_failure_callback=_failure_alert,
+    sla_miss_callback=_sla_miss_alert,
+    default_args={"sla": timedelta(hours=24)},
     tags=["customer-data", "etl"],
 )
 def customer_data_product_pipeline() -> None:
