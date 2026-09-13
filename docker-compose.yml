@@ -4,6 +4,14 @@ services:
     environment:
       DATABASE_URL: postgresql://customer:customer@postgres:5432/customer_product
       PORT: 8000
+      AUTH_MODE: "${AUTH_MODE:-google}"
+      LOCAL_AUTH_TOKEN: "${LOCAL_AUTH_TOKEN:-}"
+      AUTH_AUDIENCE: "${AUTH_AUDIENCE:-}"
+      AUTH_ROLE_BINDINGS: "${AUTH_ROLE_BINDINGS:-}"
+      AUTH_CONSUMER_ENTITLEMENTS: "${AUTH_CONSUMER_ENTITLEMENTS:-}"
+      ENABLE_GROUND_TRUTH: "${ENABLE_GROUND_TRUTH:-false}"
+      STORAGE_BACKEND: "${STORAGE_BACKEND:-local}"
+      RAW_ROOT: "${RAW_ROOT:-raw_dev}"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -17,7 +25,11 @@ services:
     environment:
       DATABASE_URL: postgresql://customer:customer@postgres:5432/customer_product
       LAKE_ROOT: lake
-      PROCESSING_MAX_ATTEMPTS: 3
+      PROCESSING_MAX_ATTEMPTS: "${PROCESSING_MAX_ATTEMPTS:-3}"
+      BASE_CURRENCY: "${BASE_CURRENCY:-USD}"
+      EXCHANGE_RATES: "${EXCHANGE_RATES:-{}}"
+      EXCHANGE_RATE_SOURCE: "${EXCHANGE_RATE_SOURCE:-configured}"
+      EXCHANGE_RATE_MAX_AGE_SECONDS: "${EXCHANGE_RATE_MAX_AGE_SECONDS:-86400}"
     volumes:
       - ./lake:/app/lake
     depends_on:
