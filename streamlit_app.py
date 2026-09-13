@@ -28,6 +28,7 @@ QUALITY_THRESHOLDS = {
     "referential": 0.0,
     "completeness": 0.99,
 }
+PIPELINE_COLOR = "#C94C4C"
 PLOT_CONFIG = {"displayModeBar": False}
 APP_SETTINGS = get_settings()
 
@@ -109,12 +110,17 @@ def render_entity_counts(
     """Show the shared entity counts used for production/GT comparison."""
     labels = list(values)
     figure = go.Figure()
-    for name, source, color in [
+    for name, source, default_color in [
         (primary_label, values, "#4C78A8"),
         (comparison_label, comparison, "#D9E2F3"),
     ]:
         if source is None:
             continue
+        color = (
+            PIPELINE_COLOR
+            if name.lower() in {"pipeline", "live pipeline"}
+            else default_color
+        )
         bar_values = [source.get(label) for label in labels]
         figure.add_bar(
             name=name,
@@ -261,7 +267,7 @@ def render_production_dashboard() -> None:
             textposition="auto",
         )
         figure.add_bar(
-            name="threshold",
+            name="configured quality limit",
             x=list(checks),
             y=[value * 100 for _, value in checks.values()],
             text=[f"{value:.2%}" for _, value in checks.values()],
@@ -411,7 +417,7 @@ def render_found_vs_global(found: dict[str, int], global_cases: dict[str, int]) 
             marker_color="#4C78A8",
         ),
         go.Bar(
-            name="global",
+            name="all generated cases",
             y=labels,
             x=global_percent,
             orientation="h",
@@ -470,7 +476,9 @@ def fraud_labels(quality: dict[str, Any]) -> tuple[list[str], list[str]]:
     return y_true, y_pred
 
 
-def render_ground_truth_ingestion(quality: dict[str, Any]) -> None:
+def render_ground_truth_ingestion(
+    quality: dict[str, Any], pipeline_quality: dict[str, Any] | None = None
+) -> None:
     st.subheader("Ground-truth ingestion outcome")
     reference = quality["dashboard_reference"]
     total = int(quality["total_count"])
@@ -485,10 +493,23 @@ def render_ground_truth_ingestion(quality: dict[str, Any]) -> None:
         "quarantined": int(reference["quarantined_count"]),
     }
     figure = go.Figure()
-    for name, values, color in [
-        ("expected", expected, "#D9E2F3"),
-        ("ground-truth observed", observed, "#4C78A8"),
-    ]:
+    series = [
+        ("generator estimate (metadata)", expected, "#D9E2F3"),
+        ("ground-truth reference", observed, "#4C78A8"),
+    ]
+    if pipeline_quality:
+        series.append(
+            (
+                "live pipeline",
+                {
+                    "accepted": int(pipeline_quality["accepted_count"]),
+                    "duplicates": int(pipeline_quality["duplicate_count"]),
+                    "quarantined": int(pipeline_quality["quarantined_count"]),
+                },
+                PIPELINE_COLOR,
+            )
+        )
+    for name, values, color in series:
         figure.add_bar(
             name=name,
             x=list(values),
@@ -506,7 +527,9 @@ def render_ground_truth_ingestion(quality: dict[str, Any]) -> None:
     st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
 
 
-def render_ground_truth_quality_gate(quality: dict[str, Any]) -> None:
+def render_ground_truth_quality_gate(
+    quality: dict[str, Any], pipeline_quality: dict[str, Any] | None = None
+) -> None:
     st.subheader("Ground-truth quality gate vs thresholds")
     total = int(quality["total_count"])
     reference = quality["dashboard_reference"]
@@ -524,15 +547,34 @@ def render_ground_truth_quality_gate(quality: dict[str, Any]) -> None:
     }
     figure = go.Figure()
     figure.add_bar(
-        name="ground-truth observed",
+        name="ground-truth reference",
         x=list(observed),
         y=[value * 100 for value in observed.values()],
         text=[f"{value:.2%}" for value in observed.values()],
         textposition="auto",
         marker_color="#4C78A8",
     )
+    if pipeline_quality:
+        live = {
+            "quarantine rate": float(pipeline_quality["quarantine_rate"]),
+            "duplicate rate": float(pipeline_quality["duplicate_rate"]),
+            "referential failures": float(
+                pipeline_quality["referential_integrity_failure_rate"]
+            ),
+            "field completeness": float(
+                pipeline_quality["required_field_completeness"]
+            ),
+        }
+        figure.add_bar(
+            name="live pipeline",
+            x=list(live),
+            y=[value * 100 for value in live.values()],
+            text=[f"{value:.2%}" for value in live.values()],
+            textposition="auto",
+            marker_color=PIPELINE_COLOR,
+        )
     figure.add_bar(
-        name="expected threshold",
+        name="contract quality limit",
         x=list(thresholds),
         y=[value * 100 for value in thresholds.values()],
         text=[f"{value:.2%}" for value in thresholds.values()],
@@ -777,9 +819,9 @@ def render_ground_truth_reference(ground_truth: dict[str, Any]) -> None:
     )
     ground_truth_left, ground_truth_right = st.columns(2)
     with ground_truth_left:
-        render_ground_truth_ingestion(ground_truth["quality"])
+        render_ground_truth_ingestion(ground_truth["quality"], pipeline_quality)
     with ground_truth_right:
-        render_ground_truth_quality_gate(ground_truth["quality"])
+        render_ground_truth_quality_gate(ground_truth["quality"], pipeline_quality)
     render_distributions(ground_truth)
     render_ground_truth_scenarios(ground_truth)
     render_sources(ground_truth["sources"])
