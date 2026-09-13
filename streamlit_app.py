@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from collections import Counter
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,6 +23,8 @@ from sklearn.metrics import (
     recall_score,
 )
 
+from eval.generator import ReleaseConfig, preview_observations
+from eval.release import ReleaseProgress, release_experiment
 from customer_data_product.settings import get_settings
 
 QUALITY_THRESHOLDS = {
@@ -74,6 +79,9 @@ def backend_get(path: str) -> tuple[Any | None, str | None]:
         response = httpx.get(f"{backend_url}{path}", headers=headers, timeout=5)
         response.raise_for_status()
         return response.json(), None
+    except httpx.HTTPStatusError as error:
+        body = error.response.text.strip() or error.response.reason_phrase
+        return None, f"HTTP {error.response.status_code}: {body}"
     except (httpx.HTTPError, ValueError) as error:
         return None, str(error)
 
@@ -97,6 +105,38 @@ def format_event_freshness(seconds: float | None) -> str:
             parts.append(f"{value}{unit}")
     age = " ".join(parts)
     return f"FUTURE +{age}" if future else f"{age} old"
+
+
+def render_sidebar_navigation(tab_labels: list[str]) -> str:
+    """Render view navigation and links to the existing operational services."""
+    backend_url = APP_SETTINGS.backend_url.rstrip("/")
+    st.sidebar.subheader("Open services")
+    selected_view = st.sidebar.radio(
+        "Results", tab_labels, label_visibility="collapsed"
+    )
+
+    if selected_view == "Production results":
+        with st.sidebar.expander("Monitoring", expanded=True):
+            st.link_button(
+                "Grafana",
+                os.getenv("GRAFANA_URL", "http://localhost:3000"),
+                width="stretch",
+            )
+            st.link_button(
+                "Prometheus",
+                os.getenv("PROMETHEUS_URL", "http://localhost:9090"),
+                width="stretch",
+            )
+        with st.sidebar.expander("Dev tools"):
+            st.link_button(
+                "Airflow",
+                os.getenv("AIRFLOW_URL", "http://localhost:8080"),
+                width="stretch",
+            )
+            st.link_button("API documentation", f"{backend_url}/docs", width="stretch")
+            st.link_button("API metrics", f"{backend_url}/metrics", width="stretch")
+
+    return selected_view
 
 
 def render_entity_counts(
@@ -180,6 +220,13 @@ def render_production_dashboard() -> None:
         st.info(
             "Start the API and process a batch to populate production results. "
             f"{summary_error or quality_error or ''}"
+        )
+        return
+
+    if quality.get("batch_status") == "EMPTY" or quality.get("total_count", 0) == 0:
+        st.info(
+            "No processed data is available yet. Load and process a batch to "
+            "populate the dashboard."
         )
         return
 
@@ -828,26 +875,262 @@ def render_ground_truth_reference(ground_truth: dict[str, Any]) -> None:
     render_fraud(ground_truth["quality"])
 
 
+def render_evaluation_live_metrics(container: Any) -> None:
+    """Render aggregate results fetched from the live backend."""
+    summary, summary_error = backend_get("/v1/summary")
+    quality, quality_error = backend_get("/v1/quality/summary")
+    with container.container():
+        st.caption("Live aggregates from the FastAPI backend")
+        if summary:
+            columns = st.columns(5)
+            for column, label, key in zip(
+                columns,
+                [
+                    "Customers",
+                    "Accounts",
+                    "Transactions",
+                    "Fraud events",
+                    "Confirmed fraud",
+                ],
+                [
+                    "customer_count",
+                    "account_count",
+                    "transaction_count",
+                    "fraud_event_count",
+                    "confirmed_fraud_count",
+                ],
+            ):
+                column.metric(label, f"{summary.get(key, 0):,}")
+        else:
+            st.warning(f"Live summary unavailable: {summary_error or 'unknown error'}")
+        if quality:
+            st.write(
+                f"Latest batch: `{quality.get('batch_id') or '—'}` · "
+                f"status: `{quality.get('batch_status', 'UNKNOWN')}` · "
+                f"quality: `{quality.get('quality_status', 'UNKNOWN')}`"
+            )
+        else:
+            st.warning(
+                f"Live quality summary unavailable: "
+                f"{quality_error or 'unknown error'}"
+            )
+
+
+def render_evaluation_release() -> None:
+    """Generate synthetic cases and release them through the real API."""
+    st.caption(
+        "Synthetic evaluation producer. Each chunk is a real backend batch; "
+        "this view does not access PostgreSQL directly."
+    )
+    today = date.today()
+    with st.form("evaluation_release_form"):
+        first_row = st.columns(3)
+        with first_row[0]:
+            start_date = st.date_input(
+                "Initial date", value=today - timedelta(days=30)
+            )
+        with first_row[1]:
+            end_date = st.date_input("End date", value=today)
+        with first_row[2]:
+            total_points = int(
+                st.number_input(
+                    "Total observations",
+                    min_value=1,
+                    max_value=10_000_000,
+                    value=1_000,
+                    step=1,
+                )
+            )
+
+        second_row = st.columns(3)
+        with second_row[0]:
+            number_users = int(
+                st.number_input(
+                    "Unique users",
+                    min_value=1,
+                    max_value=total_points,
+                    value=min(100, total_points),
+                    step=1,
+                )
+            )
+        with second_row[1]:
+            chunk_size = int(
+                st.number_input(
+                    "Points per API batch",
+                    min_value=1,
+                    max_value=total_points,
+                    value=min(10, total_points),
+                    step=1,
+                )
+            )
+        with second_row[2]:
+            mode_label = st.selectbox("Case mode", ["Mixed", "Clean", "Fraud"])
+
+        third_row = st.columns(2)
+        with third_row[0]:
+            fraud_rate = st.slider(
+                "Fraud rate",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.05,
+                step=0.01,
+                format="%.0f%%",
+                disabled=mode_label != "Mixed",
+            )
+        with third_row[1]:
+            seed = int(
+                st.number_input("Random seed", min_value=0, value=42, step=1)
+            )
+        release_clicked = st.form_submit_button("Release", type="primary")
+
+    try:
+        config = ReleaseConfig(
+            start_date=start_date,
+            end_date=end_date,
+            total_points=total_points,
+            number_users=number_users,
+            fraud_rate=float(fraud_rate),
+            mode=mode_label.lower(),  # type: ignore[arg-type]
+            chunk_size=chunk_size,
+            seed=seed,
+        )
+    except ValueError as error:
+        st.error(str(error))
+        return
+
+    st.info(
+        f"{config.total_points:,} points · {config.number_users:,} users · "
+        f"{config.fraud_count:,} frauds ({config.fraud_count / config.total_points:.2%}) · "
+        f"{config.batch_count:,} API batches"
+    )
+    if config.batch_count > 10_000:
+        st.warning(
+            "This release creates more than 10,000 backend batches. "
+            "Use a larger batch size if you do not specifically need one-by-one traffic."
+        )
+
+    st.subheader("Generated preview")
+    st.dataframe(
+        preview_observations(config), hide_index=True, width="stretch"
+    )
+    if not release_clicked:
+        return
+
+    token = (
+        APP_SETTINGS.local_auth_token
+        if APP_SETTINGS.auth_mode.lower() == "local"
+        else APP_SETTINGS.backend_token
+    )
+    progress_bar = st.progress(0.0, text="Starting release")
+    status_area = st.empty()
+    live_area = st.empty()
+    last_live_refresh = [0.0]
+
+    def on_progress(progress: ReleaseProgress) -> None:
+        fraction = progress.points_submitted / progress.total_points
+        progress_bar.progress(
+            fraction,
+            text=(
+                f"Submitted {progress.points_submitted:,}/{progress.total_points:,} "
+                f"observations across {progress.chunks_completed:,}/"
+                f"{progress.total_chunks:,} batches"
+            ),
+        )
+        status_area.info(
+            f"Latest batch `{progress.latest_batch_id or '—'}` · "
+            f"fraud submitted: {progress.fraud_submitted:,}"
+        )
+        now = time.monotonic()
+        if (
+            now - last_live_refresh[0] >= 1.0
+            or progress.chunks_completed == progress.total_chunks
+        ):
+            last_live_refresh[0] = now
+            render_evaluation_live_metrics(live_area)
+
+    report = release_experiment(
+        config,
+        base_url=APP_SETTINGS.backend_url,
+        token=token,
+        on_progress=on_progress,
+    )
+    progress = report.progress
+    progress_bar.progress(
+        progress.points_submitted / progress.total_points,
+        text=f"Release finished: {progress.points_submitted:,} observations submitted",
+    )
+    if report.error:
+        st.error(
+            f"Release stopped at chunk {report.failed_chunk_index}: {report.error}"
+        )
+    else:
+        st.success(
+            f"Release submitted {progress.points_submitted:,} observations in "
+            f"{progress.chunks_completed:,} batches."
+        )
+
+    st.subheader("Recent backend batches")
+    st.dataframe(
+        [
+            {
+                "chunk": item.chunk_index,
+                "points": item.point_count,
+                "frauds": item.fraud_count,
+                "batch_id": item.batch_id,
+                "job_id": item.job_id,
+                "batch_status": item.batch_status,
+                "job_status": item.job_status,
+            }
+            for item in progress.recent_chunks
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+
+    if progress.latest_batch_id:
+        deadline = time.monotonic() + 30.0
+        latest_batch: dict[str, Any] | None = None
+        while time.monotonic() <= deadline:
+            latest_batch, batch_error = backend_get(
+                f"/v1/batches/{progress.latest_batch_id}"
+            )
+            if batch_error:
+                st.warning(f"Latest batch status unavailable: {batch_error}")
+                break
+            if latest_batch and latest_batch.get("status") in {
+                "COMPLETED",
+                "COMPLETED_WITH_QUALITY_ISSUES",
+                "FAILED",
+            }:
+                break
+            time.sleep(1.0)
+        if latest_batch:
+            st.write(
+                f"Latest batch final observed status: "
+                f"`{latest_batch.get('status', 'UNKNOWN')}`"
+            )
+    render_evaluation_live_metrics(live_area)
+
+
 st.set_page_config(page_title="Customer Data Product", layout="wide")
 st.title("Customer Data Product")
 st.caption("Operational monitoring and ground-truth validation.")
 
 ground_truth_enabled = APP_SETTINGS.enable_ground_truth
-tab_labels = ["Production results"]
+tab_labels = ["Production results", "Evaluation / Release"]
 if ground_truth_enabled:
     tab_labels.append("Ground-truth reference")
-tabs = st.tabs(tab_labels)
 
-with tabs[0]:
+selected_view = render_sidebar_navigation(tab_labels)
+if selected_view == "Production results":
     render_production_dashboard()
-
-if ground_truth_enabled:
+elif selected_view == "Evaluation / Release":
+    render_evaluation_release()
+elif ground_truth_enabled:
     raw_root = find_raw_root()
     try:
         ground_truth = load_ground_truth(raw_root)
     except (FileNotFoundError, json.JSONDecodeError) as error:
-        with tabs[1]:
-            st.error(f"Could not load ground truth from {raw_root}: {error}")
+        st.error(f"Could not load ground truth from {raw_root}: {error}")
     else:
-        with tabs[1]:
-            render_ground_truth_reference(ground_truth)
+        render_ground_truth_reference(ground_truth)
