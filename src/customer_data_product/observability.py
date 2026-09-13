@@ -47,6 +47,14 @@ end_to_end_sla_seconds = Gauge(
     "customer_data_product_end_to_end_sla_seconds",
     "Seconds from the newest source event to snapshot publication.",
 )
+worker_heartbeat = Gauge(
+    "customer_data_product_worker_heartbeat",
+    "Worker liveness signal; set to 1 on every polling loop.",
+)
+processing_queue_depth = Gauge(
+    "customer_data_product_processing_queue_depth",
+    "Number of queued or retryable processing jobs.",
+)
 
 _otel_instruments: dict[str, Any] = {}
 _otel_values: dict[str, float] = {}
@@ -100,6 +108,14 @@ def configure_cloud_monitoring(project_id: str | None) -> None:
             callbacks=[_observable_value("end_to_end_sla_seconds")],
             unit="s",
         ),
+        worker_heartbeat=meter.create_observable_gauge(
+            "customer_data_product_worker_heartbeat",
+            callbacks=[_observable_value("worker_heartbeat")],
+        ),
+        processing_queue_depth=meter.create_observable_gauge(
+            "customer_data_product_processing_queue_depth",
+            callbacks=[_observable_value("processing_queue_depth")],
+        ),
     )
 
 
@@ -144,3 +160,10 @@ def emit_metric(name: str, **fields: Any) -> None:
         elapsed = float(fields["end_to_end_sla_seconds"])
         end_to_end_sla_seconds.set(elapsed)
         _otel_values["end_to_end_sla_seconds"] = elapsed
+    elif name == "worker_heartbeat":
+        worker_heartbeat.set(1)
+        _otel_values["worker_heartbeat"] = 1
+    elif name == "processing_queue_depth":
+        depth = float(fields.get("depth", 0))
+        processing_queue_depth.set(depth)
+        _otel_values["processing_queue_depth"] = depth

@@ -318,6 +318,14 @@ class PostgresRepository:
             )
         return retry
 
+    def processing_queue_depth(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT count(*) AS depth FROM processing_jobs
+                   WHERE status IN ('QUEUED', 'RETRYING') AND available_at <= now()"""
+            ).fetchone()
+        return int(row["depth"] if row is not None else 0)
+
     def add_file(self, batch_file: BatchFile) -> None:
         with self._connect() as connection:
             connection.execute(

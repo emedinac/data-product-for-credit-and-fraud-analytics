@@ -137,6 +137,15 @@ locals {
   metric_prefix = "workload.googleapis.com/customer_data_product_"
 }
 
+resource "terraform_data" "alert_delivery_guard" {
+  lifecycle {
+    precondition {
+      condition     = length(local.notification_channels) > 0
+      error_message = "Configure notification_channel_ids or notification_email; production alerts must have a delivery destination."
+    }
+  }
+}
+
 resource "google_monitoring_alert_policy" "freshness" {
   display_name          = "Customer Data Product freshness"
   combiner              = "OR"
@@ -191,6 +200,25 @@ resource "google_monitoring_alert_policy" "processing" {
         alignment_period     = "300s"
         per_series_aligner   = "ALIGN_RATE"
         cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+}
+
+resource "google_monitoring_alert_policy" "processing_queue" {
+  display_name          = "Customer Data Product processing queue stalled"
+  combiner              = "OR"
+  notification_channels = local.notification_channels
+  conditions {
+    display_name = "Jobs remain queued for 15 minutes"
+    condition_threshold {
+      filter          = "metric.type=\"${local.metric_prefix}processing_queue_depth\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "900s"
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_MAX"
       }
     }
   }

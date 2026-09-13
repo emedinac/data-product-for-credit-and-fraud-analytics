@@ -6,6 +6,7 @@ from typing import cast
 
 from customer_data_product.application.services import BatchService
 from customer_data_product.bootstrap import build_service
+from customer_data_product.observability import emit_metric
 from customer_data_product.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 def run_once(service: BatchService) -> bool:
     settings = get_settings()
+    depth = service.batches.processing_queue_depth()
+    emit_metric("worker_heartbeat")
+    emit_metric("processing_queue_depth", depth=depth)
     job = service.batches.claim_processing_job(settings.processing_job_lease_seconds)
     if job is None:
         return False

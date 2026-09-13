@@ -18,6 +18,10 @@ Batch responses report accepted, duplicate, quarantined, and snapshot counts. Th
  
 `GET /v1/quality/summary` returns the latest batch's rates, source/event freshness, duration, volume change, status, and failure reasons. Processing also emits JSON structured metrics for batch duration, record counts, freshness, quality failures, and processing failures. Airflow emits alert logs for task failures, quality-gate failures, and freshness breaches; these logs can be routed to an email or log-based alerting backend without changing the pipeline code. 
 
+The separate worker emits a heartbeat and queue-depth metric on every poll;
+Cloud Monitoring alerts when work remains queued for 15 minutes. Deploying and
+drilling the worker alert is an operational prerequisite for production.
+
 The generator also writes `metadata/quality_ground_truth.json` for the core files loaded by the demo. The Ground truth panel compares its expected record-quality counts with the latest observed batch. 
 
 Failed quality gates do not discard the batch or return an ingestion error from the API. The batch is marked `COMPLETED_WITH_QUALITY_ISSUES`, its `quality_status` is `FAILED`, its customer snapshot is not published, and quarantined records remain available through `GET /v1/quality?batch_id=<batch_id>` for inspection. 

@@ -92,6 +92,7 @@ class LocalProcessor:
                 None,
             )
             if handler is None:
+                emit_metric("source_schema_drift", source=batch_file.filename)
                 self.repository.add_quality_issue(
                     batch_id,
                     batch_file.filename,
