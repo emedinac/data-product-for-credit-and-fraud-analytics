@@ -25,6 +25,22 @@
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [{"expr": "customer_data_product_volume_change_ratio", "refId": "A"}]
+    },
+    {
+      "title": "End-to-end SLA seconds",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [{"expr": "customer_data_product_end_to_end_sla_seconds", "refId": "A"}]
+    },
+    {
+      "title": "Operational failures",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {"expr": "increase(customer_data_product_source_schema_drift_total[24h])", "refId": "A", "legendFormat": "Schema drift"},
+        {"expr": "increase(customer_data_product_airflow_task_failures_total[24h])", "refId": "B", "legendFormat": "Airflow failures"},
+        {"expr": "increase(customer_data_product_sla_breaches_total[24h])", "refId": "C", "legendFormat": "SLA breaches"}
+      ]
     }
   ],
   "schemaVersion": 39,
