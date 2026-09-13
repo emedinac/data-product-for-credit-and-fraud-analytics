@@ -43,6 +43,19 @@ class BatchService:
         self.batches.add_file(record)
         return record
 
+    def ingest_source_record(
+        self,
+        source: str,
+        filename: str,
+        content: object,
+        idempotency_key: str | None = None,
+    ) -> tuple[str, dict[str, object]]:
+        """Stage one source record and enqueue it through the normal pipeline."""
+        batch_id = self.create(source)
+        self.upload_file(batch_id, filename, content)
+        job = self.enqueue_processing(batch_id, idempotency_key)
+        return batch_id, job
+
     def enqueue_processing(
         self, batch_id: str, idempotency_key: str | None = None
     ) -> dict[str, object]:
@@ -128,11 +141,19 @@ class BatchService:
         self, batch_id: str, result: dict[str, object]
     ) -> QualityAssessment:
         batch = self.batches.get_batch(batch_id)
-        is_evaluation = batch is not None and batch.get("source") == "eval_experiment"
+        source = batch.get("source") if batch is not None else None
+        is_incremental = source in {
+            "customer_system",
+            "account_system",
+            "transaction_system",
+            "interaction_system",
+            "fraud_system",
+        }
+        is_evaluation = source == "eval_experiment"
         assessment = assess_quality(
             result,
             self.quality_thresholds,
-            check_volume=not is_evaluation,
+            check_volume=not (is_evaluation or is_incremental),
             check_freshness=not is_evaluation,
         )
         self.batches.update_status(

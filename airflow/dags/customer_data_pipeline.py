@@ -40,6 +40,7 @@ def _sla_miss_alert(*_: Any, **__: Any) -> None:
     emit_metric("sla_breach")
     logger.error("AIRFLOW_ALERT pipeline SLA missed")
 
+
 # Core source folders currently supported by the ingestion pipeline.
 CORE_SOURCE_DIRECTORIES = (
     "customer_core",
@@ -133,9 +134,7 @@ def customer_data_product_pipeline() -> None:
                 batch_id,
                 assessment.failures,
             )
-            raise ValueError(
-                "quality gate failed: " + ", ".join(assessment.failures)
-            )
+            raise ValueError("quality gate failed: " + ", ".join(assessment.failures))
         return batch_id
 
     @task

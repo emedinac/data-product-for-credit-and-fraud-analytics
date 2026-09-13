@@ -44,6 +44,9 @@ class Transaction:
     exchange_rate: Decimal | None = None
     exchange_rate_source: str | None = None
     exchange_rate_timestamp: datetime | None = None
+    fraud_risk_score: Decimal | None = None
+    fraud_decision: str | None = None
+    fraud_risk_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

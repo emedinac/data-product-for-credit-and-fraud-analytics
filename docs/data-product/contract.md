@@ -5,8 +5,18 @@
 - Version: `v1`
 - Grain: one record per customer in the latest successfully published batch.
 - Access: `GET /v1/customers/{customer_id}`.
+- Transaction history: `GET /v1/customers/{customer_id}/transactions` returns
+  that customer's source transactions ordered by `event_time`, for timeline
+  visualizations and investigation.
+- Each transaction includes an explainable history-based `fraud_risk_score`,
+  `fraud_decision`, and `fraud_risk_reasons`. The detector uses prior customer
+  and account transaction behavior; it does not consume external fraud labels.
 - Source batches: customer core, accounts, transactions, fraud, and customer
  interactions.
+- Source ingestion: `POST /v1/customers`, `POST /v1/accounts`, `POST
+  /v1/transactions`, `POST /v1/interactions`, and `POST /v1/fraud-events`.
+  The fraud endpoint is reserved for external fraud feedback; evaluation
+  releases do not call it.
 
 ## Customer response
 The response contains the customer identifier, first and last name, date of birth, city, and normalized status, type, and country; account count, total credit limit, and total balance; transaction count, approved transaction amount, its `transaction_amount_currency`, declined transaction count, and last transaction time; fraud-event and confirmed-fraud counts; interaction count; the source `batch_id`; and the snapshot `updated_at` timestamp.

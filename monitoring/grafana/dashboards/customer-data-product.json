@@ -6,7 +6,8 @@
   "uid": "customer-data-product",
   "panels": [
     {
-      "title": "Batches processed (24h)",
+      "title": "Batches processed (worker)",
+      "description": "Current worker counter since the worker process started.",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -20,13 +21,14 @@
       },
       "targets": [
         {
-          "expr": "increase(customer_data_product_batches_processed_total[24h])",
+          "expr": "customer_data_product_batches_processed_total{job=\"customer-data-worker\"}",
           "refId": "A"
         }
       ]
     },
     {
-      "title": "Accepted records (24h)",
+      "title": "Accepted records (worker)",
+      "description": "Current worker counter since the worker process started.",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -40,13 +42,14 @@
       },
       "targets": [
         {
-          "expr": "increase(customer_data_product_accepted_records_total[24h])",
+          "expr": "customer_data_product_accepted_records_total{job=\"customer-data-worker\"}",
           "refId": "A"
         }
       ]
     },
     {
-      "title": "Accepted transactions (24h)",
+      "title": "Accepted transactions (worker)",
+      "description": "Current worker counter since the worker process started.",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -60,7 +63,7 @@
       },
       "targets": [
         {
-          "expr": "increase(customer_data_product_accepted_transactions_total[24h])",
+          "expr": "customer_data_product_accepted_transactions_total{job=\"customer-data-worker\"}",
           "refId": "A"
         }
       ]

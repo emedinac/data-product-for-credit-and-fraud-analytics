@@ -1,8 +1,10 @@
+import csv
+import io
 import json
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Self, cast
 
 from fastapi import (
     APIRouter,
@@ -14,7 +16,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
 from customer_data_product.adapters.persistence.postgres import PostgresRepository
@@ -23,6 +25,217 @@ from customer_data_product.application.services import BatchService
 
 class BatchCreateRequest(BaseModel):
     source: str = Field(min_length=1, max_length=100)
+
+
+class ObservationCustomer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str = Field(min_length=1)
+    first_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: date | None = None
+    country: str | None = None
+    city: str | None = None
+    registered_at: datetime | None = None
+    status: str | None = None
+    customer_type: str | None = None
+
+
+class ObservationAccount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1)
+    type: str | None = None
+    opened: datetime | None = None
+    status: str | None = None
+    credit_limit: str | float | None = None
+    balance: str | float | None = None
+
+
+class ObservationAmount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    currency: str = Field(min_length=3, max_length=3)
+    amount: float
+
+
+class ObservationTransactionDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str | None = None
+    amount: ObservationAmount
+    merchant_id: str | None = None
+    merchant_category: str | None = None
+    country: str | None = None
+
+
+class ObservationTransaction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: str | None = None
+    transaction_id: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1)
+    account_id: str = Field(min_length=1)
+    event_time: datetime
+    transaction: ObservationTransactionDetails
+    status: str | None = None
+
+
+class CustomerIngestionRequest(BaseModel):
+    """A customer create/update event from the customer source system."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: str = Field(min_length=1)
+    first_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: date | None = None
+    country: str | None = None
+    city: str | None = None
+    registered_at: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices("registered_at", "registration_date"),
+    )
+    status: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("status", "customer_status"),
+    )
+    customer_type: str | None = None
+
+
+class AccountIngestionRequest(BaseModel):
+    """An account create/update event from the account source system."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1)
+    account_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("account_type", "type"),
+    )
+    opened_at: datetime | None = Field(
+        default=None,
+        validation_alias=AliasChoices("opened_at", "opening_date", "opened"),
+    )
+    credit_limit: str | float | None = None
+    balance: str | float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("balance", "current_balance"),
+    )
+    status: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("status", "account_status"),
+    )
+
+
+class TransactionIngestionRequest(BaseModel):
+    """A transaction event from the transaction source system.
+
+    Both the flat source-system shape and the nested shape used by the file
+    parser are accepted. The latter keeps this endpoint compatible with the
+    evaluation fixture without making the evaluator send fraud labels.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1)
+    account_id: str = Field(min_length=1)
+    event_time: datetime = Field(
+        validation_alias=AliasChoices("event_time", "timestamp", "event_timestamp")
+    )
+    amount: float | ObservationAmount | None = None
+    currency: str | None = None
+    transaction_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("transaction_type", "type"),
+    )
+    merchant_id: str | None = None
+    merchant_category: str | None = None
+    country: str | None = None
+    status: str | None = None
+    transaction: ObservationTransactionDetails | None = None
+
+    @model_validator(mode="after")
+    def validate_amount(self) -> Self:
+        if self.amount is None and self.transaction is None:
+            raise ValueError("amount is required")
+        return self
+
+
+class InteractionDetailsIngestionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str | None = None
+    resolution: str | None = None
+
+
+class InteractionIngestionRequest(BaseModel):
+    """A customer interaction event from the interaction source system."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    interaction_id: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1)
+    event_time: datetime = Field(
+        validation_alias=AliasChoices("event_time", "timestamp", "event_timestamp")
+    )
+    channel: str | None = None
+    interaction_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("interaction_type", "type"),
+    )
+    resolution: str | None = None
+    interaction: InteractionDetailsIngestionRequest | None = None
+
+    @model_validator(mode="after")
+    def validate_nested_fields(self) -> Self:
+        if self.interaction is not None:
+            if self.interaction_type is None:
+                self.interaction_type = self.interaction.type
+            if self.resolution is None:
+                self.resolution = self.interaction.resolution
+        return self
+
+
+class FraudEventIngestionRequest(BaseModel):
+    """External fraud-system feedback; evaluation ground truth is excluded."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=1)
+    transaction_id: str | None = None
+    customer_id: str = Field(min_length=1)
+    event_time: datetime = Field(
+        validation_alias=AliasChoices("event_time", "event_timestamp", "timestamp")
+    )
+    event_type: str | None = None
+    severity: str | None = None
+    confirmed_fraud: bool = Field(
+        validation_alias=AliasChoices("confirmed_fraud", "confirmed")
+    )
+
+
+class ObservationUploadRequest(BaseModel):
+    """One canonical observation; fraud labels are intentionally not accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    customer: ObservationCustomer
+    account: ObservationAccount
+    transaction: ObservationTransaction
+
+    @model_validator(mode="after")
+    def validate_relationships(self) -> Self:
+        if self.customer.customer_id != self.account.customer_id:
+            raise ValueError("customer and account customer_id values must match")
+        if self.customer.customer_id != self.transaction.customer_id:
+            raise ValueError("customer and transaction customer_id values must match")
+        if self.account.account_id != self.transaction.account_id:
+            raise ValueError("account and transaction account_id values must match")
+        return self
 
 
 class BatchResponse(BaseModel):
@@ -45,6 +258,17 @@ class ProcessingJobResponse(BaseModel):
 
 
 class ProcessEnqueueResponse(BaseModel):
+    batch: BatchResponse
+    job: ProcessingJobResponse
+
+
+class ObservationUploadResponse(BaseModel):
+    batch: BatchResponse
+    job: ProcessingJobResponse
+
+
+class SourceIngestionResponse(BaseModel):
+    source: str
     batch: BatchResponse
     job: ProcessingJobResponse
 
@@ -102,6 +326,24 @@ class CustomerResponse(BaseModel):
     updated_at: datetime
     effective_at: datetime | None
     as_of_time: datetime
+
+
+class CustomerTransactionResponse(BaseModel):
+    transaction_id: str
+    customer_id: str
+    account_id: str
+    event_time: datetime
+    amount: float
+    currency: str | None
+    amount_base_currency: float | None
+    transaction_type: str | None
+    status: str | None
+    merchant_id: str | None
+    merchant_category: str | None
+    country: str | None
+    fraud_risk_score: float | None = None
+    fraud_decision: str | None = None
+    fraud_risk_reasons: list[str] = Field(default_factory=list)
 
 
 class LineageFileResponse(BaseModel):
@@ -358,6 +600,114 @@ FIELD_LINEAGE = [
 ]
 
 
+def observation_files(
+    request: ObservationUploadRequest,
+) -> tuple[tuple[str, bytes], ...]:
+    """Convert one canonical observation into the existing source files."""
+    customer = json.dumps(
+        {"records": [request.customer.model_dump(mode="json", exclude_none=True)]}
+    ).encode()
+
+    account = request.account.model_dump(mode="json", exclude_none=True)
+    account_output = io.StringIO()
+    account_writer = csv.DictWriter(account_output, fieldnames=list(account))
+    account_writer.writeheader()
+    account_writer.writerow(account)
+
+    transaction = json.dumps(
+        request.transaction.model_dump(mode="json", exclude_none=True)
+    ).encode()
+    return (
+        ("customers.json", customer),
+        ("accounts.csv", account_output.getvalue().encode()),
+        ("transactions.jsonl", transaction + b"\n"),
+    )
+
+
+def customer_ingestion_file(request: CustomerIngestionRequest) -> bytes:
+    payload = request.model_dump(mode="json", exclude_none=True)
+    return json.dumps({"records": [payload]}).encode()
+
+
+def account_ingestion_file(request: AccountIngestionRequest) -> bytes:
+    payload = request.model_dump(mode="json", exclude_none=True)
+    if "status" in payload:
+        payload["account_status"] = payload.pop("status")
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(payload))
+    writer.writeheader()
+    writer.writerow(payload)
+    return output.getvalue().encode()
+
+
+def transaction_ingestion_file(request: TransactionIngestionRequest) -> bytes:
+    if isinstance(request.amount, ObservationAmount):
+        amount = request.amount.model_dump(mode="json", exclude_none=True)
+    elif request.amount is not None:
+        amount = {"amount": request.amount}
+        if request.currency is not None:
+            amount["currency"] = request.currency
+    else:
+        assert request.transaction is not None
+        nested_details = request.transaction.model_dump(mode="json", exclude_none=True)
+        amount = cast(dict[str, object], nested_details["amount"])
+
+    details: dict[str, object] = {"amount": amount}
+    if request.transaction is not None:
+        details = request.transaction.model_dump(mode="json", exclude_none=True)
+    if request.transaction_type is not None:
+        details["type"] = request.transaction_type
+    for field in ("merchant_id", "merchant_category", "country"):
+        value = getattr(request, field)
+        if value is not None:
+            details[field] = value
+
+    payload: dict[str, object] = {
+        "transaction_id": request.transaction_id,
+        "customer_id": request.customer_id,
+        "account_id": request.account_id,
+        "event_time": request.event_time.isoformat(),
+        "transaction": details,
+    }
+    if request.status is not None:
+        payload["status"] = request.status
+    return (json.dumps(payload) + "\n").encode()
+
+
+def interaction_ingestion_file(request: InteractionIngestionRequest) -> bytes:
+    interaction: dict[str, str] = {}
+    if request.interaction_type is not None:
+        interaction["type"] = request.interaction_type
+    if request.resolution is not None:
+        interaction["resolution"] = request.resolution
+    payload: dict[str, object] = {
+        "interaction_id": request.interaction_id,
+        "customer_id": request.customer_id,
+        "timestamp": request.event_time.isoformat(),
+        "interaction": interaction,
+    }
+    if request.channel is not None:
+        payload["channel"] = request.channel
+    return (json.dumps(payload) + "\n").encode()
+
+
+def fraud_event_ingestion_file(request: FraudEventIngestionRequest) -> bytes:
+    classification: dict[str, object] = {"confirmed": request.confirmed_fraud}
+    if request.event_type is not None:
+        classification["type"] = request.event_type
+    if request.severity is not None:
+        classification["severity"] = request.severity
+    payload: dict[str, object] = {
+        "event_id": request.event_id,
+        "customer_id": request.customer_id,
+        "timestamp": request.event_time.isoformat(),
+        "classification": classification,
+    }
+    if request.transaction_id is not None:
+        payload["transaction_id"] = request.transaction_id
+    return (json.dumps(payload) + "\n").encode()
+
+
 def router(
     service: BatchService,
     repository: PostgresRepository,
@@ -375,9 +725,7 @@ def router(
         raise ValueError("AUTH_ROLE_BINDINGS must be valid JSON") from exc
     try:
         consumer_entitlements = (
-            json.loads(auth_consumer_entitlements)
-            if auth_consumer_entitlements
-            else {}
+            json.loads(auth_consumer_entitlements) if auth_consumer_entitlements else {}
         )
     except json.JSONDecodeError as exc:
         raise ValueError("AUTH_CONSUMER_ENTITLEMENTS must be valid JSON") from exc
@@ -454,6 +802,25 @@ def router(
 
         return dependency
 
+    def validate_idempotency_key(key: str | None) -> None:
+        if key is not None and not key.strip():
+            raise HTTPException(
+                status_code=422, detail="Idempotency-Key cannot be blank"
+            )
+
+    def has_pii_access(claims: dict[str, Any]) -> bool:
+        roles = claims.get("_roles", claims.get("roles", []))
+        return bool(set(roles).intersection({"pii_reader", "admin"}))
+
+    def redact_customer(customer: dict[str, object]) -> dict[str, object]:
+        return {
+            **customer,
+            "first_name": None,
+            "last_name": None,
+            "date_of_birth": None,
+            "city": None,
+        }
+
     api = APIRouter(prefix="/v1", dependencies=[Depends(authenticate)])
 
     @api.post("/batches", response_model=BatchResponse, status_code=201)
@@ -465,6 +832,118 @@ def router(
         batch = repository.get_batch(batch_id)
         assert batch is not None
         return BatchResponse(**batch)
+
+    def ingest_source(
+        source: str,
+        filename: str,
+        content: bytes,
+        idempotency_key: str | None,
+    ) -> SourceIngestionResponse:
+        validate_idempotency_key(idempotency_key)
+        try:
+            batch_id, job = service.ingest_source_record(
+                source, filename, [content], idempotency_key
+            )
+        except ValueError as exc:
+            status_code = 404 if str(exc) == "batch not found" else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        batch = repository.get_batch(batch_id)
+        assert batch is not None
+        return SourceIngestionResponse(
+            source=source,
+            batch=BatchResponse(**batch),
+            job=ProcessingJobResponse(**job),
+        )
+
+    @api.post("/customers", response_model=SourceIngestionResponse, status_code=202)
+    def ingest_customer(
+        request: CustomerIngestionRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> SourceIngestionResponse:
+        return ingest_source(
+            "customer_system",
+            "customers.json",
+            customer_ingestion_file(request),
+            idempotency_key,
+        )
+
+    @api.post("/accounts", response_model=SourceIngestionResponse, status_code=202)
+    def ingest_account(
+        request: AccountIngestionRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> SourceIngestionResponse:
+        return ingest_source(
+            "account_system",
+            "accounts.csv",
+            account_ingestion_file(request),
+            idempotency_key,
+        )
+
+    @api.post("/transactions", response_model=SourceIngestionResponse, status_code=202)
+    def ingest_transaction(
+        request: TransactionIngestionRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> SourceIngestionResponse:
+        return ingest_source(
+            "transaction_system",
+            "transactions.jsonl",
+            transaction_ingestion_file(request),
+            idempotency_key,
+        )
+
+    @api.post("/interactions", response_model=SourceIngestionResponse, status_code=202)
+    def ingest_interaction(
+        request: InteractionIngestionRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> SourceIngestionResponse:
+        return ingest_source(
+            "interaction_system",
+            "interactions.jsonl",
+            interaction_ingestion_file(request),
+            idempotency_key,
+        )
+
+    @api.post("/fraud-events", response_model=SourceIngestionResponse, status_code=202)
+    def ingest_fraud_event(
+        request: FraudEventIngestionRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> SourceIngestionResponse:
+        return ingest_source(
+            "fraud_system",
+            "fraud-events.jsonl",
+            fraud_event_ingestion_file(request),
+            idempotency_key,
+        )
+
+    @api.post(
+        "/upload-sample-test",
+        response_model=ObservationUploadResponse,
+        status_code=202,
+    )
+    def upload_observation(
+        request: ObservationUploadRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        _: dict[str, Any] = Depends(require_role("operator", "admin")),
+    ) -> ObservationUploadResponse:
+        validate_idempotency_key(idempotency_key)
+        batch_id = service.create("single_observation")
+        for filename, content in observation_files(request):
+            service.upload_file(batch_id, filename, [content])
+        try:
+            job = service.enqueue_processing(batch_id, idempotency_key)
+        except ValueError as exc:
+            status_code = 404 if str(exc) == "batch not found" else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        batch = repository.get_batch(batch_id)
+        assert batch is not None
+        return ObservationUploadResponse(
+            batch=BatchResponse(**batch), job=ProcessingJobResponse(**job)
+        )
 
     @api.post(
         "/batches/{batch_id}/files", response_model=UploadResponse, status_code=201
@@ -504,10 +983,7 @@ def router(
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         _: dict[str, Any] = Depends(require_role("operator", "admin")),
     ) -> ProcessEnqueueResponse:
-        if idempotency_key is not None and not idempotency_key.strip():
-            raise HTTPException(
-                status_code=422, detail="Idempotency-Key cannot be blank"
-            )
+        validate_idempotency_key(idempotency_key)
         try:
             job = service.enqueue_processing(batch_id, idempotency_key)
         except ValueError as exc:
@@ -566,17 +1042,29 @@ def router(
             raise HTTPException(status_code=501, detail=str(exc)) from exc
         if customer is None:
             raise HTTPException(status_code=404, detail="customer not found")
-        if not set(claims.get("_roles", claims.get("roles", []))).intersection(
-            {"pii_reader", "admin"}
-        ):
-            customer = {
-                **customer,
-                "first_name": None,
-                "last_name": None,
-                "date_of_birth": None,
-                "city": None,
-            }
+        if not has_pii_access(claims):
+            customer = redact_customer(customer)
         return CustomerResponse(**customer)
+
+    @api.get(
+        "/customers/{customer_id}/transactions",
+        response_model=list[CustomerTransactionResponse],
+    )
+    def list_customer_transactions(
+        customer_id: str,
+        limit: int = Query(default=1000, ge=1, le=10000),
+        _: dict[str, Any] = Depends(require_role("reader", "pii_reader", "admin")),
+    ) -> list[CustomerTransactionResponse]:
+        try:
+            customer = repository.get_customer_snapshot(customer_id)
+        except NotImplementedError as exc:
+            raise HTTPException(status_code=501, detail=str(exc)) from exc
+        if customer is None:
+            raise HTTPException(status_code=404, detail="customer not found")
+        transactions = repository.list_customer_transactions(customer_id, limit)
+        return [
+            CustomerTransactionResponse(**transaction) for transaction in transactions
+        ]
 
     @api.get("/customers", response_model=list[CustomerResponse])
     def list_customers(
@@ -585,19 +1073,8 @@ def router(
         claims: dict[str, Any] = Depends(require_role("reader", "pii_reader", "admin")),
     ) -> list[CustomerResponse]:
         customers = repository.list_customer_snapshots(as_of=as_of, limit=limit)
-        if not set(claims.get("_roles", claims.get("roles", []))).intersection(
-            {"pii_reader", "admin"}
-        ):
-            customers = [
-                {
-                    **customer,
-                    "first_name": None,
-                    "last_name": None,
-                    "date_of_birth": None,
-                    "city": None,
-                }
-                for customer in customers
-            ]
+        if not has_pii_access(claims):
+            customers = [redact_customer(customer) for customer in customers]
         return [CustomerResponse(**customer) for customer in customers]
 
     @api.get("/summary", response_model=SummaryResponse)

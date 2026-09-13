@@ -2,7 +2,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
-from customer_data_product.domain.models import BatchFile
+from customer_data_product.domain.models import BatchFile, Transaction
 
 
 class ObjectStorage(Protocol):
@@ -29,6 +29,8 @@ class BatchRepository(Protocol):
     def add_file(self, batch_file: BatchFile) -> None: ...
 
     def list_files(self, batch_id: str) -> list[BatchFile]: ...
+
+    def list_transaction_history(self, customer_id: str) -> list[Transaction]: ...
 
     def publish_customer_snapshot(self, batch_id: str) -> int: ...
 

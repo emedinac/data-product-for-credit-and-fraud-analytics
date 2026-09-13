@@ -1,6 +1,7 @@
 # ruff: noqa: E501
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -120,6 +121,9 @@ class PostgresRepository:
                 ("exchange_rate", "NUMERIC"),
                 ("exchange_rate_source", "TEXT"),
                 ("exchange_rate_timestamp", "TIMESTAMPTZ"),
+                ("fraud_risk_score", "NUMERIC"),
+                ("fraud_decision", "TEXT"),
+                ("fraud_risk_reasons", "TEXT[] NOT NULL DEFAULT '{}'"),
             ):
                 connection.execute(
                     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
@@ -455,9 +459,10 @@ class PostgresRepository:
                     amount, currency, amount_base_currency, exchange_rate,
                     exchange_rate_source, exchange_rate_timestamp,
                     transaction_type, status, merchant_id, merchant_category,
-                    country, batch_id)
+                    country, fraud_risk_score, fraud_decision,
+                    fraud_risk_reasons, batch_id)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s)
+                           %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (transaction_id) DO NOTHING""",
                 (
                     record.transaction_id,
@@ -475,6 +480,9 @@ class PostgresRepository:
                     record.merchant_id,
                     record.merchant_category,
                     record.country,
+                    record.fraud_risk_score,
+                    record.fraud_decision,
+                    list(record.fraud_risk_reasons),
                     batch_id,
                 ),
             )
@@ -619,7 +627,7 @@ class PostgresRepository:
                             coalesce(sum(amount_base_currency) FILTER (WHERE event_time > cutoff.as_of_time - interval '90 days' AND status = 'approved'), 0) AS transaction_amount_90d,
                             avg(amount_base_currency) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status = 'approved') AS average_transaction_amount_30d,
                             count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status = 'declined')::integer AS declined_transaction_count_30d,
-                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status IN ('approved', 'declined'))::numeric / nullif(count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status IN ('approved', 'declined')), 0) AS decline_rate_30d,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status = 'declined')::numeric / nullif(count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status IN ('approved', 'declined')), 0) AS decline_rate_30d,
                             count(DISTINCT merchant_id) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND merchant_id IS NOT NULL)::integer AS distinct_merchant_count_30d,
                             count(DISTINCT country) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND country IS NOT NULL)::integer AS distinct_country_count_30d
                      FROM transactions
@@ -707,6 +715,64 @@ class PostgresRepository:
                 "SELECT * FROM customer_snapshots WHERE customer_id = %s",
                 (customer_id,),
             ).fetchone()
+
+    def list_customer_transactions(
+        self, customer_id: str, limit: int = 1000
+    ) -> list[dict[str, object]]:
+        """Return a customer's source transactions in event-time order."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT transaction_id, customer_id, account_id, event_time,
+                          amount, currency, amount_base_currency,
+                          transaction_type, status, merchant_id,
+                          merchant_category, country, fraud_risk_score,
+                          fraud_decision, fraud_risk_reasons
+                   FROM transactions
+                   WHERE customer_id = %s
+                   ORDER BY event_time, transaction_id
+                   LIMIT %s""",
+                (customer_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_transaction_history(self, customer_id: str) -> list[Transaction]:
+        """Return transaction history as domain records for risk scoring."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT transaction_id, customer_id, account_id, event_time,
+                          amount, currency, amount_base_currency,
+                          exchange_rate, exchange_rate_source,
+                          exchange_rate_timestamp, transaction_type, status,
+                          merchant_id, merchant_category, country,
+                          fraud_risk_score, fraud_decision, fraud_risk_reasons
+                   FROM transactions
+                   WHERE customer_id = %s
+                   ORDER BY event_time, transaction_id""",
+                (customer_id,),
+            ).fetchall()
+        return [
+            Transaction(
+                transaction_id=str(row["transaction_id"]),
+                customer_id=str(row["customer_id"]),
+                account_id=str(row["account_id"]),
+                event_time=row["event_time"],
+                amount=Decimal(row["amount"]),
+                currency=row["currency"],
+                transaction_type=row["transaction_type"],
+                status=row["status"],
+                merchant_id=row["merchant_id"],
+                merchant_category=row["merchant_category"],
+                country=row["country"],
+                amount_base_currency=row["amount_base_currency"],
+                exchange_rate=row["exchange_rate"],
+                exchange_rate_source=row["exchange_rate_source"],
+                exchange_rate_timestamp=row["exchange_rate_timestamp"],
+                fraud_risk_score=row["fraud_risk_score"],
+                fraud_decision=row["fraud_decision"],
+                fraud_risk_reasons=tuple(row["fraud_risk_reasons"] or ()),
+            )
+            for row in rows
+        ]
 
     def list_customer_snapshots(
         self, as_of: datetime | None = None, limit: int = 100

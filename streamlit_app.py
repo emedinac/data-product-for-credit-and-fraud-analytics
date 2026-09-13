@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 from collections import Counter
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 import plotly.graph_objects as go
@@ -29,6 +32,8 @@ QUALITY_THRESHOLDS = {
     "referential": 0.0,
     "completeness": 0.99,
 }
+BACKEND_TIMEOUT_SECONDS = 5
+MAX_RAW_SAMPLE_RECORDS = 25
 PIPELINE_COLOR = "#C94C4C"
 PLOT_CONFIG = {"displayModeBar": False}
 APP_SETTINGS = get_settings()
@@ -36,7 +41,7 @@ APP_SETTINGS = get_settings()
 
 def find_raw_root() -> Path:
     configured = APP_SETTINGS.raw_root
-    return configured if configured.is_dir() else Path("dev_raw")
+    return configured if configured.is_dir() else Path("raw_dev")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -59,20 +64,27 @@ def load_ground_truth(raw_root: Path) -> dict[str, Any]:
     }
 
 
+def backend_token() -> str | None:
+    return cast(
+        str | None,
+        (
+            APP_SETTINGS.local_auth_token
+            if APP_SETTINGS.auth_mode.lower() == "local"
+            else APP_SETTINGS.backend_token
+        ),
+    )
+
+
 def backend_get(path: str) -> tuple[Any | None, str | None]:
     backend_url = APP_SETTINGS.backend_url.rstrip("/")
-    token = (
-        APP_SETTINGS.local_auth_token
-        if APP_SETTINGS.auth_mode.lower() == "local"
-        else APP_SETTINGS.backend_token
-    )
-    headers = (
-        {"Authorization": f"Bearer {token}"}
-        if token
-        else {}
-    )
+    token = backend_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        response = httpx.get(f"{backend_url}{path}", headers=headers, timeout=5)
+        response = httpx.get(
+            f"{backend_url}{path}",
+            headers=headers,
+            timeout=BACKEND_TIMEOUT_SECONDS,
+        )
         response.raise_for_status()
         return response.json(), None
     except httpx.HTTPStatusError as error:
@@ -80,6 +92,155 @@ def backend_get(path: str) -> tuple[Any | None, str | None]:
         return None, f"HTTP {error.response.status_code}: {body}"
     except (httpx.HTTPError, ValueError) as error:
         return None, str(error)
+
+
+def raw_records(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield records from one of the supported formats in landing storage."""
+    if path.suffix.lower() == ".csv":
+        with path.open(encoding="utf-8-sig", newline="") as file:
+            for row in csv.DictReader(file):
+                yield {str(key).strip(): value for key, value in row.items() if key}
+        return
+
+    with path.open(encoding="utf-8") as file:
+        payload = (
+            json.load(file)
+            if path.suffix.lower() == ".json"
+            else [json.loads(line) for line in file if line.strip()]
+        )
+    if isinstance(payload, dict):
+        records = payload.get("records")
+        payload = records if isinstance(records, list) else [payload]
+    if not isinstance(payload, list):
+        return
+    yield from (record for record in payload if isinstance(record, dict))
+
+
+def record_customer_id(record: Mapping[str, Any]) -> str | None:
+    for field in ("customer_id", "customerId", "CUSTOMER"):
+        value = record.get(field)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def landing_sample(
+    storage_path: Path,
+    customer_id: str,
+    max_records: int = MAX_RAW_SAMPLE_RECORDS,
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    try:
+        for record in raw_records(storage_path):
+            if record_customer_id(record) == customer_id:
+                matches.append(record)
+                if len(matches) >= max_records:
+                    break
+    except (OSError, UnicodeError, csv.Error, json.JSONDecodeError):
+        return []
+    return matches
+
+
+def render_customer_transaction_timeline(
+    transactions: list[dict[str, Any]],
+) -> None:
+    """Plot one selected customer's transactions across source event time."""
+    chart_rows: list[dict[str, Any]] = []
+    for transaction in transactions:
+        event_time = transaction.get("event_time")
+        amount = transaction.get("amount_base_currency")
+        if amount is None:
+            amount = transaction.get("amount")
+        if event_time is None or amount is None:
+            continue
+        try:
+            numeric_amount = float(amount)
+        except (TypeError, ValueError):
+            continue
+        chart_rows.append(
+            {
+                **transaction,
+                "chart_amount": numeric_amount,
+                "status_label": str(transaction.get("status") or "unknown"),
+                "decision_label": str(transaction.get("fraud_decision") or "unknown"),
+            }
+        )
+
+    if not chart_rows:
+        st.info("No transactions with plottable event times and amounts.")
+        return
+
+    figure = go.Figure()
+    decision_order = {
+        "insufficient_history": 0,
+        "clear": 1,
+        "review": 2,
+        "likely_fraud": 3,
+    }
+    decisions = sorted(
+        {row["decision_label"] for row in chart_rows},
+        key=lambda decision: (decision_order.get(decision, 99), decision),
+    )
+    colors = {
+        "insufficient_history": "#9CA3AF",
+        "clear": "#2F6690",
+        "review": "#D97706",
+        "likely_fraud": "#C94C4C",
+    }
+    for decision in decisions:
+        rows = [row for row in chart_rows if row["decision_label"] == decision]
+        figure.add_trace(
+            go.Scatter(
+                x=[row["event_time"] for row in rows],
+                y=[row["chart_amount"] for row in rows],
+                mode="lines+markers",
+                name=decision,
+                marker={"color": colors.get(decision, "#6B7280"), "size": 8},
+                line={"color": colors.get(decision, "#6B7280")},
+                customdata=[
+                    [
+                        row.get("amount"),
+                        row.get("currency") or "—",
+                        row.get("amount_base_currency"),
+                        row.get("fraud_risk_score"),
+                        row.get("status_label"),
+                        row.get("merchant_category") or "—",
+                        row.get("merchant_id") or "—",
+                        row.get("country") or "—",
+                    ]
+                    for row in rows
+                ],
+                hovertemplate=(
+                    "%{x}<br>"
+                    "Chart amount: %{y:,.2f}<br>"
+                    "Source amount: %{customdata[0]:,.2f} %{customdata[1]}<br>"
+                    "Base amount: %{customdata[2]}<br>"
+                    "Risk score: %{customdata[3]}<br>"
+                    "Transaction status: %{customdata[4]}<br>"
+                    "Merchant: %{customdata[5]} (%{customdata[6]})<br>"
+                    "Country: %{customdata[7]}<extra>%{fullData.name}</extra>"
+                ),
+            )
+        )
+    figure.update_layout(
+        title="Transaction activity over time",
+        xaxis_title="Source event time",
+        yaxis_title="Amount (base currency when available)",
+        hovermode="x unified",
+        height=430,
+        margin={"l": 0, "r": 0, "t": 50, "b": 0},
+        legend={"orientation": "h", "y": 1.08},
+    )
+    st.plotly_chart(figure, width="stretch", config=PLOT_CONFIG)
+    st.caption(
+        "Line colors show the history-based transaction decision: gray means "
+        "insufficient history, blue clear, amber review, and red likely fraud."
+    )
+    if any(row.get("amount_base_currency") is None for row in chart_rows):
+        st.caption(
+            "Transactions without an exchange-rate conversion use their source "
+            "amount for plotting."
+        )
 
 
 def format_event_freshness(seconds: float | None) -> str:
@@ -101,6 +262,11 @@ def format_event_freshness(seconds: float | None) -> str:
             parts.append(f"{value}{unit}")
     age = " ".join(parts)
     return f"FUTURE +{age}" if future else f"{age} old"
+
+
+def fraction(numerator: int | float, denominator: int | float) -> float:
+    """Return zero instead of NaN or an exception for empty dashboard data."""
+    return numerator / denominator if denominator else 0.0
 
 
 def render_sidebar_navigation(tab_labels: list[str]) -> str:
@@ -133,6 +299,129 @@ def render_sidebar_navigation(tab_labels: list[str]) -> str:
             st.link_button("API metrics", f"{backend_url}/metrics", width="stretch")
 
     return selected_view
+
+
+def render_individual_sample() -> None:
+    """Show one customer's raw landing records and derived API snapshot."""
+    st.divider()
+    st.subheader("Inspect an individual sample")
+    st.caption(
+        "Select one customer to compare the unchanged raw records in landing "
+        "storage with the customer snapshot derived by the pipeline."
+    )
+
+    customers, customers_error = backend_get("/v1/customers?limit=1000")
+    customer_options = (
+        {
+            str(customer["customer_id"]): customer
+            for customer in customers
+            if isinstance(customer, dict) and customer.get("customer_id")
+        }
+        if isinstance(customers, list)
+        else {}
+    )
+    if not customer_options:
+        if customers_error:
+            st.error(f"Could not load customers for inspection: {customers_error}")
+        else:
+            st.info("No stored customers are available for inspection yet.")
+        return
+
+    selected_customer_id = st.selectbox(
+        "Customer ID",
+        list(customer_options),
+        key="individual_sample_customer_id",
+    )
+    customer = customer_options[selected_customer_id]
+
+    transactions, transactions_error = backend_get(
+        f"/v1/customers/{quote(selected_customer_id, safe='')}/transactions"
+    )
+    st.subheader("Transactions over time")
+    if isinstance(transactions, list):
+        render_customer_transaction_timeline(
+            [
+                transaction
+                for transaction in transactions
+                if isinstance(transaction, dict)
+            ]
+        )
+    else:
+        st.error(
+            f"Could not load transactions for {selected_customer_id}: "
+            f"{transactions_error or 'unknown error'}"
+        )
+
+    quality, quality_error = backend_get("/v1/quality/summary")
+    batch_id = quality.get("batch_id") if isinstance(quality, dict) else None
+    if not batch_id:
+        st.warning(
+            "The customer exists, but there is no completed batch lineage to "
+            f"locate its landing records. {quality_error or ''}"
+        )
+        with st.expander("Stored customer snapshot", expanded=True):
+            st.json(customer)
+        return
+
+    lineage, lineage_error = backend_get(
+        f"/v1/batches/{quote(str(batch_id), safe='')}/lineage"
+    )
+    if lineage is None:
+        st.error(f"Could not load batch lineage: {lineage_error}")
+        with st.expander("Stored customer snapshot", expanded=True):
+            st.json(customer)
+        return
+
+    raw_files = []
+    for file_details in lineage.get("files", []):
+        storage_key = str(file_details.get("storage_key", ""))
+        storage_path = APP_SETTINGS.lake_root / storage_key if storage_key else None
+        matches = (
+            landing_sample(storage_path, selected_customer_id)
+            if storage_path is not None and storage_path.is_file()
+            else []
+        )
+        if matches:
+            raw_files.append((file_details, matches, storage_path))
+
+    overview = st.columns(3)
+    overview[0].metric("Customer", selected_customer_id)
+    overview[1].metric("Batch", str(batch_id))
+    overview[2].metric(
+        "Source files with matches",
+        len(raw_files),
+    )
+
+    raw_tab, snapshot_tab, lineage_tab = st.tabs(
+        ["Raw landing records", "Stored customer snapshot", "Field lineage"]
+    )
+    with raw_tab:
+        st.caption(
+            "Landing storage keeps the uploaded file format. Local path shown "
+            "below is relative to the Streamlit process."
+        )
+        for file_details, matches, storage_path in raw_files:
+            filename = str(file_details.get("filename", "unknown"))
+            storage_key = str(file_details.get("storage_key", "unknown"))
+            st.markdown(f"**{filename}** · `{storage_key}`")
+            st.caption(f"Local landing path: `{storage_path}`")
+            st.code(json.dumps(matches, indent=2, ensure_ascii=False), language="json")
+        if not raw_files:
+            st.info(
+                "No local landing copy was found. The lineage tab still shows "
+                "the backend storage keys when storage is remote or unmounted."
+            )
+
+    with snapshot_tab:
+        st.caption(
+            "This is the normalized, aggregated row stored in "
+            "customer_snapshots and returned by GET /v1/customers/{customer_id}."
+        )
+        st.json(customer)
+
+    with lineage_tab:
+        st.caption("How source fields are transformed into the stored snapshot.")
+        st.dataframe(lineage.get("field_lineage", []), hide_index=True, width="stretch")
 
 
 def render_entity_counts(
@@ -180,11 +469,7 @@ def render_entity_counts(
 def render_production_dashboard() -> None:
     """Display live API and pipeline results, without ground-truth data."""
     st.caption("Live data from the API and the latest processed batch.")
-    token = (
-        APP_SETTINGS.local_auth_token
-        if APP_SETTINGS.auth_mode.lower() == "local"
-        else APP_SETTINGS.backend_token
-    )
+    token = backend_token()
     health, health_error = backend_get("/health")
     ready, ready_error = backend_get("/ready")
     summary, summary_error = backend_get("/v1/summary")
@@ -400,11 +685,13 @@ def render_metric_table(
     for label, value in values.items():
         numeric = float(value)
         share = numeric / denominator if denominator else 0.0
-        rows.append({
-            "label": label,
-            "value": f"{value:.2%}" if percent else value,
-            "bar": share * 100 if show_percentage else share,
-        })
+        rows.append(
+            {
+                "label": label,
+                "value": f"{value:.2%}" if percent else value,
+                "bar": share * 100 if show_percentage else share,
+            }
+        )
         if observed_total is not None:
             rows[-1].pop("bar")
             rows[-1]["configured rate"] = rows[-1].pop("value")
@@ -449,26 +736,28 @@ def render_found_vs_global(found: dict[str, int], global_cases: dict[str, int]) 
         f"{found[label]:,}/{global_cases[label]:,} ({value:.2f}%)"
         for label, value in zip(labels, found_percent)
     ]
-    figure = go.Figure([
-        go.Bar(
-            name="found",
-            y=labels,
-            x=found_percent,
-            orientation="h",
-            text=found_text,
-            textposition="outside",
-            marker_color="#4C78A8",
-        ),
-        go.Bar(
-            name="all generated cases",
-            y=labels,
-            x=global_percent,
-            orientation="h",
-            text=[f"{global_cases[label]:,} (100%)" for label in labels],
-            textposition="outside",
-            marker_color="#D9E2F3",
-        ),
-    ])
+    figure = go.Figure(
+        [
+            go.Bar(
+                name="found",
+                y=labels,
+                x=found_percent,
+                orientation="h",
+                text=found_text,
+                textposition="outside",
+                marker_color="#4C78A8",
+            ),
+            go.Bar(
+                name="all generated cases",
+                y=labels,
+                x=global_percent,
+                orientation="h",
+                text=[f"{global_cases[label]:,} (100%)" for label in labels],
+                textposition="outside",
+                marker_color="#D9E2F3",
+            ),
+        ]
+    )
     figure.update_layout(
         barmode="group",
         height=300,
@@ -486,6 +775,16 @@ def render_found_vs_global(found: dict[str, int], global_cases: dict[str, int]) 
 
 def fraud_metrics(quality: dict[str, Any]) -> dict[str, float]:
     y_true, y_pred = fraud_labels(quality)
+    if not y_true:
+        return {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1_score": 0.0,
+            "accuracy": 0.0,
+            "balanced_accuracy": 0.0,
+            "specificity": 0.0,
+            "matthews_corrcoef": 0.0,
+        }
 
     return {
         "precision": precision_score(
@@ -577,10 +876,13 @@ def render_ground_truth_quality_gate(
     total = int(quality["total_count"])
     reference = quality["dashboard_reference"]
     observed = {
-        "quarantine rate": quality["expected_quarantined_count"] / total,
-        "duplicate rate": reference["duplicate_count"] / total,
-        "referential failures": quality["referential_integrity_failure_count"] / total,
-        "field completeness": 1 - quality["required_field_failure_count"] / total,
+        "quarantine rate": fraction(quality["expected_quarantined_count"], total),
+        "duplicate rate": fraction(reference["duplicate_count"], total),
+        "referential failures": fraction(
+            quality["referential_integrity_failure_count"], total
+        ),
+        "field completeness": 1
+        - fraction(quality["required_field_failure_count"], total),
     }
     thresholds = {
         "quarantine rate": QUALITY_THRESHOLDS["quarantine"],
@@ -773,32 +1075,38 @@ def render_fraud(quality: dict[str, Any]) -> None:
     y_true, y_pred = fraud_labels(quality)
     matrix = confusion_matrix(y_true, y_pred, labels=["fraud", "not_fraud"])
     total = len(y_true)
+    display_total = total or 1
     misclassified = quality["misclassification"]
     summary_rows = []
     for label in ["fraud", "not_fraud"]:
         actual = sum(value == label for value in y_true)
         predicted = sum(value == label for value in y_pred)
-        summary_rows.append({
-            "label": label,
-            "ground_truth": f"{actual}/{total} ({actual / total:.2%})",
-            "predicted": f"{predicted}/{total} ({predicted / total:.2%})",
-            "misclassified": (
-                f"{misclassified['misclassified_by_label'].get(label, 0)}/{total}"
-            ),
-            "false_positive": str(int(matrix[1, 0])) if label == "fraud" else "—",
-            "false_negative": str(int(matrix[0, 1])) if label == "fraud" else "—",
-        })
+        summary_rows.append(
+            {
+                "label": label,
+                "ground_truth": f"{actual}/{total} ({actual / display_total:.2%})",
+                "predicted": f"{predicted}/{total} ({predicted / display_total:.2%})",
+                "misclassified": (
+                    f"{misclassified['misclassified_by_label'].get(label, 0)}/{total}"
+                ),
+                "false_positive": str(int(matrix[1, 0])) if label == "fraud" else "—",
+                "false_negative": str(int(matrix[0, 1])) if label == "fraud" else "—",
+            }
+        )
     total_misclassified = int(misclassified["misclassified_cases"])
-    summary_rows.append({
-        "label": "misclassified",
-        "ground_truth": "—",
-        "predicted": "—",
-        "misclassified": (
-            f"{total_misclassified}/{total} " f"({total_misclassified / total:.2%})"
-        ),
-        "false_positive": str(int(matrix[1, 0])),
-        "false_negative": str(int(matrix[0, 1])),
-    })
+    summary_rows.append(
+        {
+            "label": "misclassified",
+            "ground_truth": "—",
+            "predicted": "—",
+            "misclassified": (
+                f"{total_misclassified}/{total} "
+                f"({total_misclassified / display_total:.2%})"
+            ),
+            "false_positive": str(int(matrix[1, 0])),
+            "false_negative": str(int(matrix[0, 1])),
+        }
+    )
     st.caption("Ground truth vs predicted cases")
     st.dataframe(summary_rows, hide_index=True, width="stretch")
 
@@ -871,23 +1179,30 @@ def render_ground_truth_reference(ground_truth: dict[str, Any]) -> None:
     render_fraud(ground_truth["quality"])
 
 
-st.set_page_config(page_title="Customer Data Product", layout="wide")
-st.title("Customer Data Product")
-st.caption("Operational monitoring and ground-truth validation.")
+def main() -> None:
+    st.set_page_config(page_title="Customer Data Product", layout="wide")
+    st.title("Customer Data Product")
+    st.caption("Operational monitoring and ground-truth validation.")
 
-ground_truth_enabled = APP_SETTINGS.enable_ground_truth
-tab_labels = ["Production results"]
-if ground_truth_enabled:
-    tab_labels.append("Ground-truth reference")
+    ground_truth_enabled = APP_SETTINGS.enable_ground_truth
+    tab_labels = ["Production results"]
+    if ground_truth_enabled:
+        tab_labels.append("Ground-truth reference")
 
-selected_view = render_sidebar_navigation(tab_labels)
-if selected_view == "Production results":
-    render_production_dashboard()
-elif ground_truth_enabled:
-    raw_root = find_raw_root()
-    try:
-        ground_truth = load_ground_truth(raw_root)
-    except (FileNotFoundError, json.JSONDecodeError) as error:
-        st.error(f"Could not load ground truth from {raw_root}: {error}")
-    else:
-        render_ground_truth_reference(ground_truth)
+    selected_view = render_sidebar_navigation(tab_labels)
+    if selected_view == "Production results":
+        render_production_dashboard()
+    elif ground_truth_enabled:
+        raw_root = find_raw_root()
+        try:
+            ground_truth = load_ground_truth(raw_root)
+        except (FileNotFoundError, json.JSONDecodeError) as error:
+            st.error(f"Could not load ground truth from {raw_root}: {error}")
+        else:
+            render_ground_truth_reference(ground_truth)
+
+    render_individual_sample()
+
+
+if __name__ == "__main__":
+    main()

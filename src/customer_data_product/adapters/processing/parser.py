@@ -19,9 +19,7 @@ from customer_data_product.domain.models import (
 def first(record: Any, *names: str) -> Any:
     if not isinstance(record, Mapping):
         return None
-    normalized = {
-        normalize_name(key): value for key, value in record.items()
-    }
+    normalized = {normalize_name(key): value for key, value in record.items()}
     for name in names:
         if record.get(name) not in (None, "", "NULL", "N/A"):
             return record[name]

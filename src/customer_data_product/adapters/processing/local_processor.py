@@ -25,6 +25,7 @@ from customer_data_product.domain.contracts import (
     is_currency,
 )
 from customer_data_product.domain.currency import CurrencyPolicy
+from customer_data_product.domain.fraud import HistoryBasedFraudDetector
 from customer_data_product.domain.models import (
     Account,
     Customer,
@@ -35,14 +36,6 @@ from customer_data_product.domain.quality import distribution_shift_scores
 from customer_data_product.observability import emit_metric
 
 logger = logging.getLogger(__name__)
-
-
-def _count(counts: dict[str, object], key: str) -> int:
-    return cast(int, counts[key])
-
-
-def _increment(counts: dict[str, object], key: str) -> None:
-    counts[key] = _count(counts, key) + 1
 
 
 def _profile(
@@ -94,6 +87,7 @@ class LocalProcessor:
         self.storage = storage
         self.repository = repository
         self.currency_policy = currency_policy or CurrencyPolicy()
+        self.fraud_detector = HistoryBasedFraudDetector()
 
     def process_batch(self, batch_id: str) -> dict[str, object]:
         started = time.monotonic()
@@ -117,13 +111,12 @@ class LocalProcessor:
                 "volume_change_rate": batch["volume_change_rate"],
                 "snapshot_count": cast(int, batch["snapshot_count"]),
             }
-        self.repository.update_status(batch_id, "PROCESSING")
         processing_started_at = datetime.now(timezone.utc)
         self.repository.update_status(
             batch_id, "PROCESSING", processing_started_at=processing_started_at
         )
         previous_profile = self.repository.get_previous_distribution_profile(batch_id)
-        counts: dict[str, object] = {
+        counts: dict[str, int] = {
             "accepted_count": 0,
             "duplicate_count": 0,
             "quarantined_count": 0,
@@ -136,6 +129,7 @@ class LocalProcessor:
         }
         distribution_profile: dict[str, dict[str, int]] = {}
         source_times: list[datetime] = []
+        history_by_customer: dict[str, list[Transaction]] = {}
         parsers = {
             "customer": (parse_customers, self.repository.save_customer),
             "account": (parse_accounts, self.repository.save_account),
@@ -160,7 +154,7 @@ class LocalProcessor:
                     "core source filename not recognized",
                 )
                 emit_metric("quarantine_record", issue_type="UNSUPPORTED_SOURCE")
-                _increment(counts, "quarantined_count")
+                counts["quarantined_count"] += 1
                 continue
             parser, saver = handler
             records = parser(path)
@@ -169,7 +163,7 @@ class LocalProcessor:
             for line_number, record, error in records:
                 file_record_count += 1
                 if error or record is None:
-                    _increment(counts, "error_count")
+                    counts["error_count"] += 1
                     issue_type = (
                         "REQUIRED_FIELD_MISSING"
                         if error and "missing" in error
@@ -183,9 +177,9 @@ class LocalProcessor:
                         error or "invalid record",
                     )
                     emit_metric("quarantine_record", issue_type=issue_type)
-                    _increment(counts, "quarantined_count")
+                    counts["quarantined_count"] += 1
                     if issue_type == "REQUIRED_FIELD_MISSING":
-                        _increment(counts, "required_field_failure_count")
+                        counts["required_field_failure_count"] += 1
                         file_required_field_failures += 1
                     continue
                 event_time = getattr(record, "event_time", None)
@@ -208,9 +202,25 @@ class LocalProcessor:
                         exchange_rate_source=converted[2],
                         exchange_rate_timestamp=converted[3],
                     )
+                    history = history_by_customer.get(record.customer_id)
+                    if history is None:
+                        history = self.repository.list_transaction_history(
+                            record.customer_id
+                        )
+                        history_by_customer[record.customer_id] = history
+                    assessment = self.fraud_detector.assess(
+                        record,
+                        history,
+                    )
+                    record = replace(
+                        record,
+                        fraud_risk_score=assessment.score,
+                        fraud_decision=assessment.decision,
+                        fraud_risk_reasons=assessment.reasons,
+                    )
                 allowed_error = _allowed_value_error(record)
                 if allowed_error is not None:
-                    _increment(counts, "quarantined_count")
+                    counts["quarantined_count"] += 1
                     self.repository.add_quality_issue(
                         batch_id,
                         batch_file.filename,
@@ -223,7 +233,7 @@ class LocalProcessor:
                 try:
                     inserted = saver(record, batch_id)
                 except Exception as exc:
-                    _increment(counts, "error_count")
+                    counts["error_count"] += 1
                     issue_type = (
                         "REFERENTIAL_INTEGRITY_FAILURE"
                         if "foreign key" in str(exc).lower()
@@ -245,18 +255,19 @@ class LocalProcessor:
                         str(exc),
                     )
                     emit_metric("quarantine_record", issue_type=issue_type)
-                    _increment(counts, "quarantined_count")
+                    counts["quarantined_count"] += 1
                     is_referential = (
                         "foreign key" in str(exc).lower()
                         or "referential" in str(exc).lower()
                     )
                     if is_referential:
-                        _increment(counts, "referential_integrity_failure_count")
+                        counts["referential_integrity_failure_count"] += 1
                     continue
                 key = "accepted_count" if inserted else "duplicate_count"
-                _increment(counts, key)
+                counts[key] += 1
                 if inserted and isinstance(record, Transaction):
-                    _increment(counts, "accepted_transaction_count")
+                    history_by_customer[record.customer_id].append(record)
+                    counts["accepted_transaction_count"] += 1
                     _profile(distribution_profile, "transaction_status", record.status)
                     _profile(
                         distribution_profile, "transaction_country", record.country
@@ -267,9 +278,9 @@ class LocalProcessor:
                         record.merchant_category,
                     )
                 elif inserted and isinstance(record, FraudEvent):
-                    _increment(counts, "fraud_event_count")
+                    counts["fraud_event_count"] += 1
                     if record.confirmed:
-                        _increment(counts, "confirmed_fraud_count")
+                        counts["confirmed_fraud_count"] += 1
                     _profile(
                         distribution_profile, "fraud_event_type", record.event_type
                     )
@@ -292,29 +303,32 @@ class LocalProcessor:
             (ended_at - source_max).total_seconds() if source_max is not None else None
         )
         total = sum(
-            _count(counts, key)
+            counts[key]
             for key in ("accepted_count", "duplicate_count", "quarantined_count")
         )
         previous_total = self.repository.get_previous_total(batch_id)
         volume_change = (
             abs(total - previous_total) / previous_total if previous_total else None
         )
-        counts["total_count"] = total
-        counts["source_event_min"] = source_min
-        counts["source_event_max"] = source_max
-        counts["freshness_seconds"] = freshness
-        counts["duration_seconds"] = time.monotonic() - started
-        counts["volume_change_rate"] = volume_change
-        counts["processing_completed_at"] = datetime.now(timezone.utc)
+        result: dict[str, object] = {
+            **counts,
+            "total_count": total,
+            "source_event_min": source_min,
+            "source_event_max": source_max,
+            "freshness_seconds": freshness,
+            "duration_seconds": time.monotonic() - started,
+            "volume_change_rate": volume_change,
+            "processing_completed_at": datetime.now(timezone.utc),
+        }
         shift_scores = distribution_shift_scores(distribution_profile, previous_profile)
         distribution_shift = max(shift_scores.values(), default=0.0)
-        counts["distribution_profile"] = distribution_profile
-        counts["distribution_shift_score"] = distribution_shift
-        self.repository.update_status(batch_id, "LOADED", **counts)
+        result["distribution_profile"] = distribution_profile
+        result["distribution_shift_score"] = distribution_shift
+        self.repository.update_status(batch_id, "LOADED", **result)
         emit_metric(
             "batch_processing",
             batch_id=batch_id,
-            duration_seconds=counts["duration_seconds"],
+            duration_seconds=result["duration_seconds"],
             total_count=total,
             accepted_count=counts["accepted_count"],
             accepted_transaction_count=counts["accepted_transaction_count"],
@@ -322,8 +336,8 @@ class LocalProcessor:
             quarantined_count=counts["quarantined_count"],
             freshness_seconds=freshness,
             quality_failures=(
-                _count(counts, "required_field_failure_count")
-                + _count(counts, "referential_integrity_failure_count")
+                counts["required_field_failure_count"]
+                + counts["referential_integrity_failure_count"]
             ),
         )
         emit_metric(
@@ -339,4 +353,4 @@ class LocalProcessor:
             score=distribution_shift,
             by_dimension=shift_scores,
         )
-        return counts
+        return result

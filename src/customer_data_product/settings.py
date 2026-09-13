@@ -10,9 +10,7 @@ from customer_data_product.domain.quality import QualityThresholds
 
 
 class Settings(BaseSettings):
-    database_url: str = (
-        "postgresql://customer:customer@localhost:5432/customer_product"
-    )
+    database_url: str = "postgresql://customer:customer@localhost:5432/customer_product"
     lake_root: Path = Path("lake")
     storage_backend: str = "local"
     storage_bucket: str | None = None

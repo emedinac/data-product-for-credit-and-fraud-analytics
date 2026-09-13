@@ -39,9 +39,7 @@ class LocalGroundTruthReader:
                         continue
                     if isinstance(value, dict) and value.get("scenario_id"):
                         scenario_id = str(value["scenario_id"])
-                        records_by_scenario.setdefault(scenario_id, []).append(
-                            value
-                        )
+                        records_by_scenario.setdefault(scenario_id, []).append(value)
         return records_by_scenario
 
     @staticmethod
@@ -119,9 +117,7 @@ class LocalGroundTruthReader:
                     predicted_label, classification_result, misclassified = (
                         self._prediction(str(label), scenario_evidence)
                     )
-                    subtype = (
-                        str(value["subtype"]) if value.get("subtype") else None
-                    )
+                    subtype = str(value["subtype"]) if value.get("subtype") else None
                     explanation = self._explanation(
                         str(label),
                         subtype,
@@ -139,9 +135,7 @@ class LocalGroundTruthReader:
                             subtype=subtype,
                             confirmed=bool(value.get("confirmed", False)),
                             evidence_found=evidence_found,
-                            customer_id=(
-                                customer_ids[0] if customer_ids else None
-                            ),
+                            customer_id=(customer_ids[0] if customer_ids else None),
                             transaction_ids=tuple(transaction_ids),
                             event_types=tuple(event_types),
                             evidence_records=tuple(scenario_evidence),
@@ -161,9 +155,7 @@ class LocalGroundTruthReader:
             total=len(records),
             confirmed=sum(record.confirmed for record in records),
             evidence_found=sum(record.evidence_found for record in records),
-            evidence_missing=sum(
-                not record.evidence_found for record in records
-            ),
+            evidence_missing=sum(not record.evidence_found for record in records),
             labels_by_type=dict(Counter(record.label for record in records)),
             subtypes=dict(
                 Counter(record.subtype for record in records if record.subtype)
