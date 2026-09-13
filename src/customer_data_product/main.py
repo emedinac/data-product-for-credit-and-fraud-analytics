@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException
-from prometheus_client import make_asgi_app
+from fastapi import FastAPI, HTTPException, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from customer_data_product.adapters.events import LocalEventPublisher
 from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
@@ -49,7 +49,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.quality_thresholds,
     )
     app = FastAPI(title="Customer Data Product", version="0.1.0")
-    app.mount("/metrics", make_asgi_app())
+
+    @app.get("/metrics")
+    def metrics() -> Response:
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
     app.include_router(
         router(
             service,

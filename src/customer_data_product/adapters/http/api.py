@@ -316,11 +316,11 @@ def router(
             raise HTTPException(status_code=401, detail="Bearer token required")
         token = authorization.removeprefix("Bearer ").strip()
         try:
-            from google.auth.transport import requests  # type: ignore[import-untyped]
-            from google.oauth2 import id_token  # type: ignore[import-untyped]
+            from google.auth.transport import requests
+            from google.oauth2 import id_token
 
             claims = id_token.verify_oauth2_token(
-                token, requests.Request(), audience=auth_audience
+                token, requests.Request(), audience=auth_audience  # type: ignore[no-untyped-call]
             )
         except Exception as exc:
             raise HTTPException(status_code=401, detail="invalid bearer token") from exc

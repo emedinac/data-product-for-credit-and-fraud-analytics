@@ -3,12 +3,12 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import cast
 
-from google.cloud import storage  # type: ignore[import-untyped]
+from google.cloud.storage import Client  # type: ignore[import-untyped]
 
 
 class GCSObjectStorage:
     def __init__(self, bucket_name: str) -> None:
-        self.client = storage.Client()
+        self.client = Client()
         self.bucket = self.client.bucket(bucket_name)
 
     def put(self, key: str, source: Iterable[bytes]) -> int:
