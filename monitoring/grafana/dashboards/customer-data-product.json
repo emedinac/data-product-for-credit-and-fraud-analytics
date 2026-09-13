@@ -53,6 +53,12 @@
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
       "targets": [{"expr": "customer_data_product_worker_heartbeat", "refId": "A"}]
+    },
+    {
+      "title": "Exchange-rate failures",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "targets": [{"expr": "increase(customer_data_product_exchange_rate_failures_total[24h])", "refId": "A"}]
     }
   ],
   "schemaVersion": 39,

@@ -38,9 +38,33 @@ utilization), and `no_credit`. Age bands use the snapshot cutoff.
 - The default base currency is `USD`, configurable with `BASE_CURRENCY`.
 - `EXCHANGE_RATES` is a JSON object such as `{"EUR": 1.08, "GBP": 1.27}`. Each value is base-currency units for one source-currency unit.
 - Rates are supplied by the configured `EXCHANGE_RATE_SOURCE` and described by `EXCHANGE_RATE_TIMESTAMP`.
+- Non-base rates must be present, positive, timestamped, and no older than `EXCHANGE_RATE_MAX_AGE_SECONDS` (default 24 hours); future timestamps are rejected.
 - Each transaction retains its source `amount` and `currency`, plus the converted amount, rate, source, and timestamp. Same-currency conversion uses rate `1`.
 - Account `credit_limit` and `balance` values are treated as already being in the base currency because the account source does not provide a currency.
 - Approved transaction totals are aggregated only from converted amounts and are labeled with `transaction_amount_currency`. Transactions with a missing rate remain in transaction counts but are excluded from monetary totals; no raw amounts from different currencies are added together.
+- Every transaction retains the applied rate and timestamp in the warehouse, providing historical rate retention. Missing or stale rates emit `customer_data_product_exchange_rate_failures_total`; processing continues and monetary totals exclude those transactions.
+
+## Required, nullable, and allowed values
+
+Required output fields are `customer_id`, `account_count`, `transaction_count`,
+`transaction_amount`, `transaction_amount_currency`, all count fields,
+`batch_id`, `updated_at`, and `as_of_time`. Source identity and status fields
+(`status`, `customer_type`, `country`) are nullable; nullable source values are
+preserved as null. Monetary totals are non-null and use zero when no qualifying
+records exist. `credit_utilization`, `decline_rate_30d`, `last_transaction_at`,
+tenure/age fields, and effective timestamps are nullable when their inputs are
+missing or undefined.
+
+The approved normalized sets are: customer statuses `active`, `inactive`,
+`blocked`, `closed`; customer types `individual`, `premium`, `business`; account
+types `credit_card`, `personal_loan`, `payment_account`; account statuses
+`active`, `closed`, `delinquent`, `past_due`; transaction types `purchase`,
+`withdrawal`, `transfer`, `payment`, `refund`; transaction statuses `approved`,
+`declined`, `reversed`; and fraud event types `suspicious_transaction`,
+`account_takeover`, `card_stolen`, `identity_risk`, `chargeback`. Countries must
+be ISO 3166-1 alpha-2 uppercase codes and currencies ISO 4217-style uppercase
+three-letter codes. Unknown non-null values are quarantined as
+`INVALID_ALLOWED_VALUE`.
 
 ## Time semantics
 

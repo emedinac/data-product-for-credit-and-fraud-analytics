@@ -35,6 +35,10 @@ source_schema_drift = Counter(
     "customer_data_product_source_schema_drift_total",
     "Source files whose records do not match the expected required fields.",
 )
+exchange_rate_failures = Counter(
+    "customer_data_product_exchange_rate_failures_total",
+    "Transactions skipped from monetary totals due to missing or stale rates.",
+)
 airflow_task_failures = Counter(
     "customer_data_product_airflow_task_failures_total",
     "Failed Airflow task attempts for the customer data pipeline.",
@@ -99,6 +103,9 @@ def configure_cloud_monitoring(project_id: str | None) -> None:
         source_schema_drift=meter.create_counter(
             "customer_data_product_source_schema_drift_total"
         ),
+        exchange_rate_failures=meter.create_counter(
+            "customer_data_product_exchange_rate_failures_total"
+        ),
         airflow_task_failures=meter.create_counter(
             "customer_data_product_airflow_task_failures_total"
         ),
@@ -148,6 +155,10 @@ def emit_metric(name: str, **fields: Any) -> None:
         source_schema_drift.inc()
         if "source_schema_drift" in _otel_instruments:
             _otel_instruments["source_schema_drift"].add(1)
+    elif name == "exchange_rate_failure":
+        exchange_rate_failures.inc()
+        if "exchange_rate_failures" in _otel_instruments:
+            _otel_instruments["exchange_rate_failures"].add(1)
     elif name == "airflow_task_failure":
         airflow_task_failures.inc()
         if "airflow_task_failures" in _otel_instruments:

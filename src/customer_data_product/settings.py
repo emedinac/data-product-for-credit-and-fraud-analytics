@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     exchange_rate_timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    exchange_rate_max_age_seconds: int = 86400
     exchange_rates: dict[str, Decimal] = Field(default_factory=dict)
     processing_max_attempts: int = 3
     processing_retry_base_seconds: int = 30

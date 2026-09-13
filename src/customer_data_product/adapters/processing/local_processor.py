@@ -13,8 +13,24 @@ from customer_data_product.adapters.processing.parser import (
     parse_transactions,
 )
 from customer_data_product.application.ports import ObjectStorage
+from customer_data_product.domain.contracts import (
+    ACCOUNT_STATUSES,
+    ACCOUNT_TYPES,
+    CUSTOMER_STATUSES,
+    CUSTOMER_TYPES,
+    FRAUD_TYPES,
+    TRANSACTION_STATUSES,
+    TRANSACTION_TYPES,
+    is_country,
+    is_currency,
+)
 from customer_data_product.domain.currency import CurrencyPolicy
-from customer_data_product.domain.models import Transaction
+from customer_data_product.domain.models import (
+    Account,
+    Customer,
+    FraudEvent,
+    Transaction,
+)
 from customer_data_product.observability import emit_metric
 
 logger = logging.getLogger(__name__)
@@ -26,6 +42,37 @@ def _count(counts: dict[str, object], key: str) -> int:
 
 def _increment(counts: dict[str, object], key: str) -> None:
     counts[key] = _count(counts, key) + 1
+
+
+def _allowed_value_error(record: object) -> str | None:
+    checks: list[tuple[str | None, frozenset[str]]] = []
+    if isinstance(record, Customer):
+        checks = [
+            (record.status, CUSTOMER_STATUSES),
+            (record.customer_type, CUSTOMER_TYPES),
+        ]
+        if record.country is not None and not is_country(record.country):
+            return "country is not an ISO alpha-2 code"
+    elif isinstance(record, Account):
+        checks = [
+            (record.account_type, ACCOUNT_TYPES),
+            (record.status, ACCOUNT_STATUSES),
+        ]
+    elif isinstance(record, Transaction):
+        checks = [
+            (record.transaction_type, TRANSACTION_TYPES),
+            (record.status, TRANSACTION_STATUSES),
+        ]
+        if record.currency is not None and not is_currency(record.currency):
+            return "currency is not an ISO 4217 code"
+        if record.country is not None and not is_country(record.country):
+            return "country is not an ISO alpha-2 code"
+    elif isinstance(record, FraudEvent):
+        checks = [(record.event_type, FRAUD_TYPES)]
+    for value, allowed in checks:
+        if value is not None and value not in allowed:
+            return f"value '{value}' is not in the approved v1 set"
+    return None
 
 
 class LocalProcessor:
@@ -138,6 +185,8 @@ class LocalProcessor:
                     converted = self.currency_policy.convert(
                         record.amount, record.currency
                     )
+                    if converted[0] is None:
+                        emit_metric("exchange_rate_failure")
                     record = replace(
                         record,
                         amount_base_currency=converted[0],
@@ -145,6 +194,17 @@ class LocalProcessor:
                         exchange_rate_source=converted[2],
                         exchange_rate_timestamp=converted[3],
                     )
+                allowed_error = _allowed_value_error(record)
+                if allowed_error is not None:
+                    _increment(counts, "quarantined_count")
+                    self.repository.add_quality_issue(
+                        batch_id,
+                        batch_file.filename,
+                        line_number,
+                        "INVALID_ALLOWED_VALUE",
+                        allowed_error,
+                    )
+                    continue
                 try:
                     inserted = saver(record, batch_id)
                 except Exception as exc:

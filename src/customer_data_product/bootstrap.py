@@ -31,6 +31,7 @@ def build_service(settings: Settings) -> BatchService:
             },
             source=settings.exchange_rate_source,
             rate_timestamp=settings.exchange_rate_timestamp,
+            max_rate_age_seconds=settings.exchange_rate_max_age_seconds,
         ),
     )
     return BatchService(
