@@ -6,6 +6,20 @@ services:
       PORT: 8000
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./lake:/app/lake
+    depends_on:
+      - postgres
+
+  worker:
+    build: .
+    command: python -m customer_data_product.worker
+    environment:
+      DATABASE_URL: postgresql://customer:customer@postgres:5432/customer_product
+      LAKE_ROOT: lake
+      PROCESSING_MAX_ATTEMPTS: 3
+    volumes:
+      - ./lake:/app/lake
     depends_on:
       - postgres
 
