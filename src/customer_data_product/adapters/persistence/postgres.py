@@ -76,6 +76,10 @@ class PostgresRepository:
         schema = Path(__file__).with_name("schema.sql").read_text()
         migration_dir = Path(__file__).with_name("migrations")
         with self._connect() as connection:
+            # API and worker can start together against an empty database.
+            # Serialize schema/migration initialization to avoid concurrent
+            # CREATE TABLE/TYPE races inside PostgreSQL.
+            connection.execute("SELECT pg_advisory_xact_lock(2147483647)")
             connection.execute(schema)
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS schema_migrations (
