@@ -6,36 +6,42 @@
     {
       "title": "Batch processing duration",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
-      "targets": [{"expr": "customer_data_product_processing_duration_seconds", "refId": "A"}]
+      "targets": [{"expr": "customer_data_product_processing_duration_seconds_sum", "refId": "A"}]
     },
     {
       "title": "Freshness seconds",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [{"expr": "customer_data_product_freshness_seconds", "refId": "A"}]
     },
     {
       "title": "Quality failures",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [{"expr": "increase(customer_data_product_quality_failures_total[1h])", "refId": "A"}]
     },
     {
       "title": "Volume change ratio",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [{"expr": "customer_data_product_volume_change_ratio", "refId": "A"}]
     },
     {
       "title": "End-to-end SLA seconds",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
       "targets": [{"expr": "customer_data_product_end_to_end_sla_seconds", "refId": "A"}]
     },
     {
       "title": "Operational failures",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
       "targets": [
         {"expr": "increase(customer_data_product_source_schema_drift_total[24h])", "refId": "A", "legendFormat": "Schema drift"},
@@ -46,18 +52,21 @@
     {
       "title": "Worker queue depth",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
       "targets": [{"expr": "customer_data_product_processing_queue_depth", "refId": "A"}]
     },
     {
       "title": "Worker heartbeat",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
       "targets": [{"expr": "customer_data_product_worker_heartbeat", "refId": "A"}]
     },
     {
       "title": "Exchange-rate failures",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
       "targets": [{"expr": "increase(customer_data_product_exchange_rate_failures_total[24h])", "refId": "A"}]
     },
@@ -65,6 +74,7 @@
       "title": "Fraud events",
       "description": "Accepted fraud events and confirmed fraud events in the rolling hour.",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
       "targets": [
         {"expr": "increase(customer_data_product_fraud_events_total[1h])", "refId": "A", "legendFormat": "Fraud events"},
@@ -76,6 +86,7 @@
       "title": "Fraud confirmation rate",
       "description": "Confirmed fraud events divided by accepted fraud events in the latest batch.",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
       "targets": [{"expr": "customer_data_product_fraud_confirmation_rate", "refId": "A"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
@@ -84,6 +95,7 @@
       "title": "Quarantine rate",
       "description": "Quarantined records divided by all records examined in the latest batch. Quality limit: 5%.",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
       "targets": [{"expr": "customer_data_product_quarantine_rate", "refId": "A"}],
       "fieldConfig": {
@@ -100,6 +112,7 @@
       "title": "Quarantined records by reason",
       "description": "Rolling 24-hour quarantine volume split by bounded quality issue type.",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 48},
       "targets": [{"expr": "sum by (issue_type) (increase(customer_data_product_quarantine_issues_total[24h]))", "refId": "A", "legendFormat": "{{issue_type}}"}],
       "fieldConfig": {"defaults": {"unit": "short", "custom": {"stacking": {"mode": "normal", "group": "A"}}}, "overrides": []}
@@ -108,6 +121,7 @@
       "title": "Distribution shift score",
       "description": "Maximum Jensen-Shannon divergence from the previous processed batch. 0 means stable; 1 means fully different.",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 48},
       "targets": [{"expr": "customer_data_product_distribution_shift_score", "refId": "A"}],
       "fieldConfig": {
@@ -124,6 +138,7 @@
       "title": "Distribution shift by dimension",
       "description": "Jensen-Shannon divergence for customer status, transaction status/country, merchant category, and fraud event type.",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 56},
       "targets": [{"expr": "customer_data_product_distribution_shift_by_dimension", "refId": "A", "legendFormat": "{{dimension}}"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
@@ -132,12 +147,34 @@
       "title": "Volume anomaly vs limit",
       "description": "Absolute batch volume change. Quality limit: 50%.",
       "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 56},
       "targets": [
         {"expr": "customer_data_product_volume_change_ratio", "refId": "A", "legendFormat": "Observed volume change"},
         {"expr": "vector(0.5)", "refId": "B", "legendFormat": "Configured limit"}
       ],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0}, "overrides": []}
+    },
+    {
+      "title": "Batches processed (24h)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 64},
+      "targets": [{"expr": "increase(customer_data_product_batches_processed_total[24h])", "refId": "A"}]
+    },
+    {
+      "title": "Accepted records (24h)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 64},
+      "targets": [{"expr": "increase(customer_data_product_accepted_records_total[24h])", "refId": "A"}]
+    },
+    {
+      "title": "Accepted transactions (24h)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 64},
+      "targets": [{"expr": "increase(customer_data_product_accepted_transactions_total[24h])", "refId": "A"}]
     }
   ],
   "schemaVersion": 39,

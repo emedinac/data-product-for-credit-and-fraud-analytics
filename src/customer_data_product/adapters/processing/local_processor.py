@@ -317,6 +317,7 @@ class LocalProcessor:
             duration_seconds=counts["duration_seconds"],
             total_count=total,
             accepted_count=counts["accepted_count"],
+            accepted_transaction_count=counts["accepted_transaction_count"],
             duplicate_count=counts["duplicate_count"],
             quarantined_count=counts["quarantined_count"],
             freshness_seconds=freshness,

@@ -23,6 +23,18 @@ processing_failures = Counter(
     "customer_data_product_processing_failures_total",
     "Batch processing failures.",
 )
+batches_processed = Counter(
+    "customer_data_product_batches_processed_total",
+    "Batches processed by the worker.",
+)
+accepted_records = Counter(
+    "customer_data_product_accepted_records_total",
+    "Records accepted during batch processing.",
+)
+accepted_transactions = Counter(
+    "customer_data_product_accepted_transactions_total",
+    "Transactions accepted during batch processing.",
+)
 freshness_seconds = Gauge(
     "customer_data_product_freshness_seconds",
     "Seconds between the newest source event and processing.",
@@ -196,6 +208,9 @@ def emit_metric(name: str, **fields: Any) -> None:
     """Emit a log-shaped metric that can be shipped to a metrics backend."""
     logger.info(json.dumps({"metric": name, **fields}, default=str, sort_keys=True))
     if name == "batch_processing":
+        batches_processed.inc()
+        accepted_records.inc(int(fields.get("accepted_count", 0)))
+        accepted_transactions.inc(int(fields.get("accepted_transaction_count", 0)))
         if fields.get("duration_seconds") is not None:
             duration = float(fields["duration_seconds"])
             processing_duration.observe(duration)

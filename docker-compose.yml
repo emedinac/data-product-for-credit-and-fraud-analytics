@@ -30,6 +30,7 @@ services:
       EXCHANGE_RATES: "${EXCHANGE_RATES:-{}}"
       EXCHANGE_RATE_SOURCE: "${EXCHANGE_RATE_SOURCE:-configured}"
       EXCHANGE_RATE_MAX_AGE_SECONDS: "${EXCHANGE_RATE_MAX_AGE_SECONDS:-86400}"
+      WORKER_METRICS_PORT: 8001
     volumes:
       - ./lake:/app/lake
     depends_on:
