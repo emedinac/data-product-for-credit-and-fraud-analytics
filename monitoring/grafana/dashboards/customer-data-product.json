@@ -1,6 +1,7 @@
 {
   "annotations": {"list": []},
   "editable": false,
+  "uid": "customer-data-product",
   "panels": [
     {
       "title": "Batch processing duration",
