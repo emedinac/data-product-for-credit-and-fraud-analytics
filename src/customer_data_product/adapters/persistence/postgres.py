@@ -1,6 +1,9 @@
-from datetime import datetime
+# ruff: noqa: E501
+
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import psycopg
 from psycopg.rows import dict_row
@@ -41,6 +44,32 @@ class PostgresRepository:
     def check_connection(self) -> None:
         with self._connect() as connection:
             connection.execute("SELECT 1")
+
+    def record_access_audit(
+        self,
+        *,
+        actor_subject: str,
+        consumer: str | None,
+        action: str,
+        resource: str,
+        outcome: str,
+        roles: set[str],
+    ) -> None:
+        """Append access metadata only; requests and responses may contain PII."""
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO access_audit
+                   (actor_subject, consumer, action, resource, outcome, roles)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (
+                    actor_subject,
+                    consumer,
+                    action,
+                    resource,
+                    outcome,
+                    sorted(roles),
+                ),
+            )
 
     def initialize(self) -> None:
         schema = Path(__file__).with_name("schema.sql").read_text()
@@ -181,6 +210,114 @@ class PostgresRepository:
                 values,
             )
 
+    def enqueue_processing(
+        self, batch_id: str, idempotency_key: str | None, max_attempts: int
+    ) -> dict[str, object]:
+        with self._connect() as connection:
+            batch = connection.execute(
+                """SELECT status, files_count FROM batches
+                   WHERE batch_id = %s FOR UPDATE""",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise ValueError("batch not found")
+            if int(batch["files_count"]) == 0:
+                raise ValueError("batch has no files")
+            if idempotency_key:
+                existing = connection.execute(
+                    "SELECT * FROM processing_jobs WHERE idempotency_key = %s",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    if existing["batch_id"] != batch_id:
+                        raise ValueError("idempotency key belongs to another batch")
+                    return dict(existing)
+            existing = connection.execute(
+                "SELECT * FROM processing_jobs WHERE batch_id = %s", (batch_id,)
+            ).fetchone()
+            if existing is not None:
+                return dict(existing)
+            if batch["status"] == "COMPLETED":
+                raise ValueError("batch has already completed")
+            job_id = str(uuid4())
+            row = connection.execute(
+                """INSERT INTO processing_jobs
+                   (job_id, batch_id, idempotency_key, max_attempts)
+                   VALUES (%s, %s, %s, %s) RETURNING *""",
+                (job_id, batch_id, idempotency_key, max_attempts),
+            ).fetchone()
+            connection.execute(
+                """UPDATE batches SET status = 'QUEUED', updated_at = now()
+                   WHERE batch_id = %s""",
+                (batch_id,),
+            )
+        assert row is not None
+        return dict(row)
+
+    def claim_processing_job(self, lease_seconds: int) -> dict[str, object] | None:
+        expired = datetime.now(timezone.utc) - timedelta(seconds=lease_seconds)
+        lock_token = str(uuid4())
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM processing_jobs
+                   WHERE (status IN ('QUEUED', 'RETRYING') AND available_at <= now())
+                      OR (status = 'PROCESSING' AND locked_at < %s)
+                   ORDER BY available_at, created_at
+                   FOR UPDATE SKIP LOCKED LIMIT 1""",
+                (expired,),
+            ).fetchone()
+            if row is None:
+                return None
+            claimed = connection.execute(
+                """UPDATE processing_jobs
+                   SET status = 'PROCESSING', attempts = attempts + 1,
+                       locked_at = now(), lock_token = %s, updated_at = now()
+                   WHERE job_id = %s RETURNING *""",
+                (lock_token, row["job_id"]),
+            ).fetchone()
+            connection.execute(
+                """UPDATE batches SET status = 'PROCESSING', updated_at = now()
+                   WHERE batch_id = %s""",
+                (row["batch_id"],),
+            )
+        return dict(claimed) if claimed is not None else None
+
+    def complete_processing_job(self, job_id: str, lock_token: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE processing_jobs SET status = 'COMPLETED', locked_at = NULL,
+                   lock_token = NULL, updated_at = now()
+                   WHERE job_id = %s AND lock_token = %s""",
+                (job_id, lock_token),
+            )
+
+    def fail_processing_job(
+        self, job_id: str, lock_token: str, error: str, retry_delay_seconds: int
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM processing_jobs WHERE job_id = %s FOR UPDATE", (job_id,)
+            ).fetchone()
+            if row is None or row["lock_token"] != lock_token:
+                return False
+            retry = int(row["attempts"]) < int(row["max_attempts"])
+            status = "RETRYING" if retry else "FAILED"
+            connection.execute(
+                """UPDATE processing_jobs
+                   SET status = %s,
+                       available_at = now() + %s * interval '1 second',
+                       locked_at = NULL, lock_token = NULL, last_error = %s,
+                       updated_at = now()
+                   WHERE job_id = %s""",
+                (status, retry_delay_seconds if retry else 0, error[:4000], job_id),
+            )
+            connection.execute(
+                """UPDATE batches SET status = %s, updated_at = now()
+                   WHERE batch_id = %s""",
+                (status, row["batch_id"]),
+            )
+        return retry
+
     def add_file(self, batch_file: BatchFile) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -217,7 +354,16 @@ class PostgresRepository:
                    (customer_id, first_name, last_name, date_of_birth, status,
                     customer_type, country, city, registered_at, batch_id)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (customer_id) DO NOTHING""",
+                   ON CONFLICT (customer_id) DO UPDATE SET
+                     first_name = EXCLUDED.first_name,
+                     last_name = EXCLUDED.last_name,
+                     date_of_birth = EXCLUDED.date_of_birth,
+                     status = EXCLUDED.status,
+                     customer_type = EXCLUDED.customer_type,
+                     country = EXCLUDED.country,
+                     city = EXCLUDED.city,
+                     registered_at = EXCLUDED.registered_at,
+                     batch_id = EXCLUDED.batch_id""",
                 (
                     record.customer_id,
                     record.first_name,
@@ -240,7 +386,14 @@ class PostgresRepository:
                    (account_id, customer_id, account_type, opened_at,
                     credit_limit, balance, status, batch_id)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (account_id) DO NOTHING""",
+                   ON CONFLICT (account_id) DO UPDATE SET
+                     customer_id = EXCLUDED.customer_id,
+                     account_type = EXCLUDED.account_type,
+                     opened_at = EXCLUDED.opened_at,
+                     credit_limit = EXCLUDED.credit_limit,
+                     balance = EXCLUDED.balance,
+                     status = EXCLUDED.status,
+                     batch_id = EXCLUDED.batch_id""",
                 (
                     record.account_id,
                     record.customer_id,
@@ -338,40 +491,111 @@ class PostgresRepository:
                    transaction_amount, transaction_amount_currency,
                    declined_transaction_count,
                    fraud_event_count, confirmed_fraud_count, interaction_count,
-                    last_transaction_at, batch_id, updated_at, effective_at,
+                    last_transaction_at, customer_since, customer_age_band,
+                    transaction_count_7d, transaction_count_30d,
+                    transaction_count_90d, transaction_amount_7d,
+                    transaction_amount_30d, transaction_amount_90d,
+                    average_transaction_amount_30d,
+                    declined_transaction_count_30d, decline_rate_30d,
+                    distinct_merchant_count_30d, distinct_country_count_30d,
+                    fraud_event_count_90d, confirmed_fraud_count_90d,
+                    days_since_last_transaction, customer_tenure_days,
+                    credit_utilization, delinquent_account_count, has_delinquency,
+                    portfolio_segment, batch_id, updated_at, effective_at,
                     as_of_time)
                    SELECT c.customer_id, c.first_name, c.last_name, c.date_of_birth,
                           c.status, c.customer_type, c.country, c.city,
-                          (SELECT count(*) FROM accounts a
-                           WHERE a.customer_id = c.customer_id),
-                          (SELECT coalesce(sum(a.credit_limit), 0)
-                           FROM accounts a WHERE a.customer_id = c.customer_id),
-                          (SELECT coalesce(sum(a.balance), 0)
-                           FROM accounts a WHERE a.customer_id = c.customer_id),
-                          (SELECT count(*) FROM transactions t
-                           WHERE t.customer_id = c.customer_id),
-                          (SELECT coalesce(sum(t.amount_base_currency), 0)
-                           FROM transactions t
-                           WHERE t.customer_id = c.customer_id
-                           AND t.status = 'approved'
-                           AND t.amount_base_currency IS NOT NULL),
-                          %s,
-                          (SELECT count(*) FROM transactions t
-                           WHERE t.customer_id = c.customer_id
-                           AND t.status = 'declined'),
-                          (SELECT count(*) FROM fraud_events f
-                           WHERE f.customer_id = c.customer_id),
-                          (SELECT count(*) FROM fraud_events f
-                           WHERE f.customer_id = c.customer_id
-                           AND f.confirmed),
+                          accounts.account_count, accounts.total_credit_limit,
+                          accounts.total_balance, transactions.transaction_count,
+                          transactions.transaction_amount, %s,
+                          transactions.declined_transaction_count,
+                          fraud.fraud_event_count, fraud.confirmed_fraud_count,
                           (SELECT count(*) FROM interactions i
-                           WHERE i.customer_id = c.customer_id),
-                          (SELECT max(t.event_time) FROM transactions t
-                           WHERE t.customer_id = c.customer_id),
-                          %s, now(),
-                          (SELECT source_event_max FROM batches
-                           WHERE batch_id = %s), now()
+                           WHERE i.customer_id = c.customer_id
+                             AND i.event_time <= cutoff.as_of_time),
+                          transactions.last_transaction_at, c.registered_at,
+                          CASE
+                            WHEN c.date_of_birth IS NULL THEN NULL
+                            WHEN extract(year FROM age(cutoff.as_of_time, c.date_of_birth)) < 25 THEN 'under_25'
+                            WHEN extract(year FROM age(cutoff.as_of_time, c.date_of_birth)) < 35 THEN '25_34'
+                            WHEN extract(year FROM age(cutoff.as_of_time, c.date_of_birth)) < 45 THEN '35_44'
+                            WHEN extract(year FROM age(cutoff.as_of_time, c.date_of_birth)) < 55 THEN '45_54'
+                            WHEN extract(year FROM age(cutoff.as_of_time, c.date_of_birth)) < 65 THEN '55_64'
+                            ELSE '65_plus'
+                          END,
+                          transactions.transaction_count_7d,
+                          transactions.transaction_count_30d,
+                          transactions.transaction_count_90d,
+                          transactions.transaction_amount_7d,
+                          transactions.transaction_amount_30d,
+                          transactions.transaction_amount_90d,
+                          transactions.average_transaction_amount_30d,
+                          transactions.declined_transaction_count_30d,
+                          transactions.decline_rate_30d,
+                          transactions.distinct_merchant_count_30d,
+                          transactions.distinct_country_count_30d,
+                          fraud.fraud_event_count_90d,
+                          fraud.confirmed_fraud_count_90d,
+                          CASE WHEN transactions.last_transaction_at IS NULL THEN NULL
+                               ELSE greatest(0, extract(day FROM cutoff.as_of_time - transactions.last_transaction_at))::integer
+                          END,
+                          CASE WHEN c.registered_at IS NULL THEN NULL
+                               ELSE greatest(0, extract(day FROM cutoff.as_of_time - c.registered_at))::integer
+                          END,
+                          accounts.credit_utilization,
+                          accounts.delinquent_account_count,
+                          accounts.delinquent_account_count > 0,
+                          CASE
+                            WHEN accounts.delinquent_account_count > 0 THEN 'delinquent'
+                            WHEN transactions.transaction_count_90d = 0 THEN 'inactive'
+                            WHEN accounts.credit_utilization >= 0.75 THEN 'high_utilization'
+                            WHEN accounts.credit_utilization > 0 THEN 'revolving'
+                            ELSE 'no_credit'
+                          END,
+                          %s, now(), cutoff.as_of_time, now()
                    FROM customers c
+                   CROSS JOIN LATERAL (
+                     SELECT coalesce(source_event_max, now()) AS as_of_time
+                     FROM batches WHERE batch_id = %s
+                   ) cutoff
+                   CROSS JOIN LATERAL (
+                     SELECT count(*)::integer AS account_count,
+                            coalesce(sum(credit_limit), 0) AS total_credit_limit,
+                            coalesce(sum(balance), 0) AS total_balance,
+                            count(*) FILTER (WHERE status IN ('delinquent', 'past_due'))::integer AS delinquent_account_count,
+                            coalesce(sum(balance) / nullif(sum(credit_limit), 0), NULL) AS credit_utilization
+                     FROM accounts WHERE customer_id = c.customer_id
+                   ) accounts
+                   CROSS JOIN LATERAL (
+                     SELECT count(*)::integer AS transaction_count,
+                            coalesce(sum(amount_base_currency) FILTER (WHERE status = 'approved'), 0) AS transaction_amount,
+                            count(*) FILTER (WHERE status = 'declined')::integer AS declined_transaction_count,
+                            max(event_time) AS last_transaction_at,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '7 days')::integer AS transaction_count_7d,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days')::integer AS transaction_count_30d,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '90 days')::integer AS transaction_count_90d,
+                            coalesce(sum(amount_base_currency) FILTER (WHERE event_time > cutoff.as_of_time - interval '7 days' AND status = 'approved'), 0) AS transaction_amount_7d,
+                            coalesce(sum(amount_base_currency) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status = 'approved'), 0) AS transaction_amount_30d,
+                            coalesce(sum(amount_base_currency) FILTER (WHERE event_time > cutoff.as_of_time - interval '90 days' AND status = 'approved'), 0) AS transaction_amount_90d,
+                            avg(amount_base_currency) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status = 'approved') AS average_transaction_amount_30d,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status = 'declined')::integer AS declined_transaction_count_30d,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status IN ('approved', 'declined'))::numeric / nullif(count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND status IN ('approved', 'declined')), 0) AS decline_rate_30d,
+                            count(DISTINCT merchant_id) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND merchant_id IS NOT NULL)::integer AS distinct_merchant_count_30d,
+                            count(DISTINCT country) FILTER (WHERE event_time > cutoff.as_of_time - interval '30 days' AND country IS NOT NULL)::integer AS distinct_country_count_30d
+                     FROM transactions
+                     WHERE customer_id = c.customer_id
+                       AND event_time <= cutoff.as_of_time
+                       AND coalesce(status, '') <> 'reversed'
+                   ) transactions
+                   CROSS JOIN LATERAL (
+                     SELECT count(*)::integer AS fraud_event_count,
+                            count(*) FILTER (WHERE confirmed)::integer AS confirmed_fraud_count,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '90 days')::integer AS fraud_event_count_90d,
+                            count(*) FILTER (WHERE event_time > cutoff.as_of_time - interval '90 days' AND confirmed)::integer AS confirmed_fraud_count_90d
+                     FROM fraud_events
+                     WHERE customer_id = c.customer_id
+                       AND event_time <= cutoff.as_of_time
+                   ) fraud
                    ON CONFLICT (customer_id) DO UPDATE SET
                      first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name,
                      date_of_birth = EXCLUDED.date_of_birth,
@@ -388,6 +612,27 @@ class PostgresRepository:
                      confirmed_fraud_count = EXCLUDED.confirmed_fraud_count,
                      interaction_count = EXCLUDED.interaction_count,
                      last_transaction_at = EXCLUDED.last_transaction_at,
+                     customer_since = EXCLUDED.customer_since,
+                     customer_age_band = EXCLUDED.customer_age_band,
+                     transaction_count_7d = EXCLUDED.transaction_count_7d,
+                     transaction_count_30d = EXCLUDED.transaction_count_30d,
+                     transaction_count_90d = EXCLUDED.transaction_count_90d,
+                     transaction_amount_7d = EXCLUDED.transaction_amount_7d,
+                     transaction_amount_30d = EXCLUDED.transaction_amount_30d,
+                     transaction_amount_90d = EXCLUDED.transaction_amount_90d,
+                     average_transaction_amount_30d = EXCLUDED.average_transaction_amount_30d,
+                     declined_transaction_count_30d = EXCLUDED.declined_transaction_count_30d,
+                     decline_rate_30d = EXCLUDED.decline_rate_30d,
+                     distinct_merchant_count_30d = EXCLUDED.distinct_merchant_count_30d,
+                     distinct_country_count_30d = EXCLUDED.distinct_country_count_30d,
+                     fraud_event_count_90d = EXCLUDED.fraud_event_count_90d,
+                     confirmed_fraud_count_90d = EXCLUDED.confirmed_fraud_count_90d,
+                     days_since_last_transaction = EXCLUDED.days_since_last_transaction,
+                     customer_tenure_days = EXCLUDED.customer_tenure_days,
+                     credit_utilization = EXCLUDED.credit_utilization,
+                     delinquent_account_count = EXCLUDED.delinquent_account_count,
+                     has_delinquency = EXCLUDED.has_delinquency,
+                     portfolio_segment = EXCLUDED.portfolio_segment,
                      batch_id = EXCLUDED.batch_id,
                      updated_at = now(), effective_at = EXCLUDED.effective_at,
                      as_of_time = now()""",
@@ -423,6 +668,26 @@ class PostgresRepository:
                 (customer_id,),
             ).fetchone()
 
+    def list_customer_snapshots(
+        self, as_of: datetime | None = None, limit: int = 100
+    ) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            if as_of is not None:
+                rows = connection.execute(
+                    """SELECT DISTINCT ON (customer_id) snapshot
+                       FROM customer_snapshot_history
+                       WHERE as_of_time <= %s
+                       ORDER BY customer_id, as_of_time DESC
+                       LIMIT %s""",
+                    (as_of, limit),
+                ).fetchall()
+                return [row["snapshot"] for row in rows]
+            return connection.execute(
+                """SELECT * FROM customer_snapshots
+                   ORDER BY customer_id LIMIT %s""",
+                (limit,),
+            ).fetchall()
+
     def get_summary(self) -> dict[str, object]:
         queries = {
             "customer_count": "SELECT count(*) AS value FROM customers",
@@ -447,12 +712,8 @@ class PostgresRepository:
             ).fetchone()
         values["last_batch_id"] = latest["batch_id"] if latest else None
         values["last_batch_status"] = latest["status"] if latest else None
-        values["last_batch_updated_at"] = (
-            latest["updated_at"] if latest else None
-        )
-        values["latest_accepted_count"] = (
-            int(latest["accepted_count"]) if latest else 0
-        )
+        values["last_batch_updated_at"] = latest["updated_at"] if latest else None
+        values["latest_accepted_count"] = int(latest["accepted_count"]) if latest else 0
         values["latest_duplicate_count"] = (
             int(latest["duplicate_count"]) if latest else 0
         )
@@ -460,6 +721,111 @@ class PostgresRepository:
             int(latest["quarantined_count"]) if latest else 0
         )
         return values
+
+    def get_analytics_summary(self) -> dict[str, object]:
+        """Return the small set of aggregates most analytics consumers need."""
+        with self._connect() as connection:
+            current = connection.execute(
+                """WITH cutoff AS (
+                         SELECT coalesce(
+                             (SELECT source_event_max FROM batches
+                              WHERE status IN ('COMPLETED', 'LOADED')
+                              ORDER BY updated_at DESC LIMIT 1), now()
+                         ) AS value
+                       ), activity AS (
+                         SELECT t.customer_id,
+                                count(*) FILTER (
+                                    WHERE t.event_time > cutoff.value - interval '30 days'
+                                ) AS current_count,
+                                count(*) FILTER (
+                                    WHERE t.event_time > cutoff.value - interval '60 days'
+                                      AND t.event_time <= cutoff.value - interval '30 days'
+                                ) AS previous_count
+                         FROM transactions t CROSS JOIN cutoff
+                         WHERE t.event_time <= cutoff.value
+                           AND coalesce(t.status, '') <> 'reversed'
+                         GROUP BY t.customer_id
+                       )
+                       SELECT
+                         (SELECT count(*) FROM customer_snapshots
+                          WHERE status = 'active') AS active_customer_count,
+                         (SELECT count(*) FROM activity
+                          WHERE current_count > previous_count)
+                           AS customers_increased_activity_30d,
+                         (SELECT count(*) FROM customer_snapshots
+                          WHERE coalesce(total_balance, 0) > 0)
+                           AS customers_with_outstanding_balance,
+                         coalesce(
+                           100.0 * count(*) FILTER (WHERE credit_utilization >= 0.75)
+                           / nullif(count(*), 0), 0
+                         ) AS highly_utilized_percentage
+                       FROM customer_snapshots"""
+            ).fetchone()
+            assert current is not None
+            by_segment = connection.execute(
+                """SELECT portfolio_segment AS label,
+                          avg(average_transaction_amount_30d) AS value
+                   FROM customer_snapshots
+                   WHERE average_transaction_amount_30d IS NOT NULL
+                   GROUP BY portfolio_segment ORDER BY portfolio_segment"""
+            ).fetchall()
+            by_country = connection.execute(
+                """SELECT coalesce(country, 'unknown') AS label, count(*) AS count
+                   FROM customer_snapshots
+                   GROUP BY coalesce(country, 'unknown') ORDER BY label"""
+            ).fetchall()
+            trend = connection.execute(
+                """SELECT batch_id, max(as_of_time) AS as_of_time,
+                          count(*) AS customer_count,
+                          count(*) FILTER (
+                            WHERE snapshot->>'status' = 'active'
+                          ) AS active_customer_count,
+                          coalesce(sum(
+                            nullif(snapshot->>'total_balance', '')::numeric
+                          ), 0) AS total_balance,
+                          avg(nullif(
+                            snapshot->>'credit_utilization', ''
+                          )::numeric) AS average_credit_utilization
+                   FROM customer_snapshot_history
+                   GROUP BY batch_id
+                   ORDER BY as_of_time DESC
+                   LIMIT 12"""
+            ).fetchall()
+        return {
+            "active_customer_count": int(current["active_customer_count"] or 0),
+            "customers_increased_activity_30d": int(
+                current["customers_increased_activity_30d"] or 0
+            ),
+            "average_transaction_amount_by_segment": {
+                str(row["label"]): float(row["value"])
+                for row in by_segment
+            },
+            "customers_with_outstanding_balance": int(
+                current["customers_with_outstanding_balance"] or 0
+            ),
+            "highly_utilized_percentage": float(
+                current["highly_utilized_percentage"] or 0
+            ),
+            "customers_by_country": [
+                {"label": str(row["label"]), "count": int(row["count"])}
+                for row in by_country
+            ],
+            "portfolio_trend": [
+                {
+                    "batch_id": str(row["batch_id"]),
+                    "as_of_time": row["as_of_time"],
+                    "customer_count": int(row["customer_count"]),
+                    "active_customer_count": int(row["active_customer_count"]),
+                    "total_balance": float(row["total_balance"] or 0),
+                    "average_credit_utilization": (
+                        float(row["average_credit_utilization"])
+                        if row["average_credit_utilization"] is not None
+                        else None
+                    ),
+                }
+                for row in trend
+            ],
+        }
 
     def get_quality_summary(self) -> dict[str, object]:
         with self._connect() as connection:
@@ -516,8 +882,7 @@ class PostgresRepository:
             "quarantined_count": int(row["quarantined_count"] or 0),
             "required_field_completeness": max(
                 0.0,
-                1.0
-                - int(row["required_field_failure_count"] or 0) / denominator,
+                1.0 - int(row["required_field_failure_count"] or 0) / denominator,
             ),
             "referential_integrity_failure_rate": int(
                 row["referential_integrity_failure_count"] or 0

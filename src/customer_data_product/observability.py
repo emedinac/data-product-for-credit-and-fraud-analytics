@@ -31,6 +31,22 @@ volume_change_ratio = Gauge(
     "customer_data_product_volume_change_ratio",
     "Absolute batch volume change ratio from the previous batch.",
 )
+source_schema_drift = Counter(
+    "customer_data_product_source_schema_drift_total",
+    "Source files whose records do not match the expected required fields.",
+)
+airflow_task_failures = Counter(
+    "customer_data_product_airflow_task_failures_total",
+    "Failed Airflow task attempts for the customer data pipeline.",
+)
+sla_breaches = Counter(
+    "customer_data_product_sla_breaches_total",
+    "Batches that exceeded the end-to-end freshness SLA.",
+)
+end_to_end_sla_seconds = Gauge(
+    "customer_data_product_end_to_end_sla_seconds",
+    "Seconds from the newest source event to snapshot publication.",
+)
 
 _otel_instruments: dict[str, Any] = {}
 _otel_values: dict[str, float] = {}
@@ -72,6 +88,18 @@ def configure_cloud_monitoring(project_id: str | None) -> None:
             "customer_data_product_volume_change_ratio",
             callbacks=[_observable_value("volume_change_ratio")],
         ),
+        source_schema_drift=meter.create_counter(
+            "customer_data_product_source_schema_drift_total"
+        ),
+        airflow_task_failures=meter.create_counter(
+            "customer_data_product_airflow_task_failures_total"
+        ),
+        sla_breaches=meter.create_counter("customer_data_product_sla_breaches_total"),
+        end_to_end_sla_seconds=meter.create_observable_gauge(
+            "customer_data_product_end_to_end_sla_seconds",
+            callbacks=[_observable_value("end_to_end_sla_seconds")],
+            unit="s",
+        ),
     )
 
 
@@ -100,3 +128,19 @@ def emit_metric(name: str, **fields: Any) -> None:
         processing_failures.inc()
         if "processing_failures" in _otel_instruments:
             _otel_instruments["processing_failures"].add(1)
+    elif name == "source_schema_drift":
+        source_schema_drift.inc()
+        if "source_schema_drift" in _otel_instruments:
+            _otel_instruments["source_schema_drift"].add(1)
+    elif name == "airflow_task_failure":
+        airflow_task_failures.inc()
+        if "airflow_task_failures" in _otel_instruments:
+            _otel_instruments["airflow_task_failures"].add(1)
+    elif name == "sla_breach":
+        sla_breaches.inc()
+        if "sla_breaches" in _otel_instruments:
+            _otel_instruments["sla_breaches"].add(1)
+    elif name == "batch_published" and fields.get("end_to_end_sla_seconds") is not None:
+        elapsed = float(fields["end_to_end_sla_seconds"])
+        end_to_end_sla_seconds.set(elapsed)
+        _otel_values["end_to_end_sla_seconds"] = elapsed

@@ -33,6 +33,26 @@ CREATE TABLE IF NOT EXISTS batch_files (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS processing_jobs (
+    job_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL UNIQUE REFERENCES batches(batch_id),
+    idempotency_key TEXT,
+    status TEXT NOT NULL DEFAULT 'QUEUED',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL,
+    available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    locked_at TIMESTAMPTZ,
+    lock_token TEXT,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_processing_jobs_idempotency_key
+    ON processing_jobs (idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_ready
+    ON processing_jobs (status, available_at);
+
 CREATE TABLE IF NOT EXISTS customers (
     customer_id TEXT PRIMARY KEY,
     first_name TEXT,
@@ -117,6 +137,27 @@ CREATE TABLE IF NOT EXISTS customer_snapshots (
     confirmed_fraud_count INTEGER NOT NULL,
     interaction_count INTEGER NOT NULL,
     last_transaction_at TIMESTAMPTZ,
+    customer_since TIMESTAMPTZ,
+    customer_age_band TEXT,
+    transaction_count_7d INTEGER NOT NULL DEFAULT 0,
+    transaction_count_30d INTEGER NOT NULL DEFAULT 0,
+    transaction_count_90d INTEGER NOT NULL DEFAULT 0,
+    transaction_amount_7d NUMERIC NOT NULL DEFAULT 0,
+    transaction_amount_30d NUMERIC NOT NULL DEFAULT 0,
+    transaction_amount_90d NUMERIC NOT NULL DEFAULT 0,
+    average_transaction_amount_30d NUMERIC,
+    declined_transaction_count_30d INTEGER NOT NULL DEFAULT 0,
+    decline_rate_30d NUMERIC,
+    distinct_merchant_count_30d INTEGER NOT NULL DEFAULT 0,
+    distinct_country_count_30d INTEGER NOT NULL DEFAULT 0,
+    fraud_event_count_90d INTEGER NOT NULL DEFAULT 0,
+    confirmed_fraud_count_90d INTEGER NOT NULL DEFAULT 0,
+    days_since_last_transaction INTEGER,
+    customer_tenure_days INTEGER,
+    credit_utilization NUMERIC,
+    delinquent_account_count INTEGER NOT NULL DEFAULT 0,
+    has_delinquency BOOLEAN NOT NULL DEFAULT FALSE,
+    portfolio_segment TEXT NOT NULL DEFAULT 'inactive',
     batch_id TEXT NOT NULL REFERENCES batches(batch_id),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     effective_at TIMESTAMPTZ,
@@ -144,3 +185,17 @@ CREATE TABLE IF NOT EXISTS quality_issues (
 
 CREATE INDEX IF NOT EXISTS idx_quality_issues_batch_id
     ON quality_issues (batch_id);
+
+CREATE TABLE IF NOT EXISTS access_audit (
+    audit_id BIGSERIAL PRIMARY KEY,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor_subject TEXT NOT NULL,
+    consumer TEXT,
+    action TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('ALLOWED', 'DENIED')),
+    roles TEXT[] NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_audit_actor_time
+    ON access_audit (actor_subject, occurred_at DESC);

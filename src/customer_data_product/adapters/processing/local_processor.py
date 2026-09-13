@@ -103,7 +103,10 @@ class LocalProcessor:
                 continue
             parser, saver = handler
             records = parser(path)
+            file_record_count = 0
+            file_required_field_failures = 0
             for line_number, record, error in records:
+                file_record_count += 1
                 if error or record is None:
                     _increment(counts, "error_count")
                     issue_type = (
@@ -121,6 +124,7 @@ class LocalProcessor:
                     _increment(counts, "quarantined_count")
                     if issue_type == "REQUIRED_FIELD_MISSING":
                         _increment(counts, "required_field_failure_count")
+                        file_required_field_failures += 1
                     continue
                 event_time = getattr(record, "event_time", None)
                 if event_time is None:
@@ -173,6 +177,16 @@ class LocalProcessor:
                     continue
                 key = "accepted_count" if inserted else "duplicate_count"
                 _increment(counts, key)
+            if (
+                file_record_count > 0
+                and file_required_field_failures == file_record_count
+            ):
+                logger.error(
+                    "source_schema_drift batch_id=%s file=%s",
+                    batch_id,
+                    batch_file.filename,
+                )
+                emit_metric("source_schema_drift")
         ended_at = datetime.now(timezone.utc)
         source_min = min(source_times) if source_times else None
         source_max = max(source_times) if source_times else None

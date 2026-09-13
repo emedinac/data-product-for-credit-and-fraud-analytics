@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     backend_token: str | None = None
     auth_audience: str | None = None
     auth_role_bindings: str = ""
+    auth_consumer_entitlements: str = ""
     max_quarantine_rate: float = 0.05
     max_duplicate_rate: float = 0.05
     max_referential_integrity_failure_rate: float = 0.0
@@ -36,6 +37,10 @@ class Settings(BaseSettings):
         default_factory=lambda: datetime.now(timezone.utc)
     )
     exchange_rates: dict[str, Decimal] = Field(default_factory=dict)
+    processing_max_attempts: int = 3
+    processing_retry_base_seconds: int = 30
+    processing_job_lease_seconds: int = 1800
+    processing_worker_poll_seconds: float = 2.0
 
     @property
     def quality_thresholds(self) -> QualityThresholds:

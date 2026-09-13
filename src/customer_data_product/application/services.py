@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from customer_data_product.application.ports import (
@@ -26,6 +27,7 @@ class BatchService:
     publisher: EventPublisher
     processor: DataProcessor
     quality_thresholds: QualityThresholds = QualityThresholds()
+    max_processing_attempts: int = 3
 
     def create(self, source: str) -> str:
         batch_id = str(uuid4())
@@ -40,6 +42,13 @@ class BatchService:
         record = BatchFile(batch_id, file_id, safe_name, key)
         self.batches.add_file(record)
         return record
+
+    def enqueue_processing(
+        self, batch_id: str, idempotency_key: str | None = None
+    ) -> dict[str, object]:
+        return self.batches.enqueue_processing(
+            batch_id, idempotency_key, self.max_processing_attempts
+        )
 
     def process(self, batch_id: str) -> dict[str, object]:
         result = self._load(batch_id, operation="process")
@@ -89,9 +98,30 @@ class BatchService:
         if batch is None or batch.get("quality_status") != "PASSED":
             raise ValueError("batch has not passed the quality gate")
         snapshot_count = self.batches.publish_customer_snapshot(batch_id)
-        self.batches.update_status(
-            batch_id, "COMPLETED", snapshot_count=snapshot_count
+        published_at = datetime.now(timezone.utc)
+        source_event_max = batch.get("source_event_max")
+        end_to_end_sla_seconds = (
+            (published_at - source_event_max).total_seconds()
+            if isinstance(source_event_max, datetime)
+            else None
         )
+        self.batches.update_status(
+            batch_id,
+            "COMPLETED",
+            snapshot_count=snapshot_count,
+            freshness_seconds=end_to_end_sla_seconds,
+            processing_completed_at=published_at,
+        )
+        emit_metric(
+            "batch_published",
+            batch_id=batch_id,
+            end_to_end_sla_seconds=end_to_end_sla_seconds,
+        )
+        if (
+            end_to_end_sla_seconds is not None
+            and end_to_end_sla_seconds > self.quality_thresholds.max_freshness_seconds
+        ):
+            emit_metric("sla_breach", batch_id=batch_id)
         return snapshot_count
 
     def evaluate_quality(
@@ -120,4 +150,6 @@ class BatchService:
                 assessment.referential_integrity_failure_rate
             ),
         )
+        if "FRESHNESS" in assessment.failures:
+            emit_metric("sla_breach", batch_id=batch_id)
         return assessment

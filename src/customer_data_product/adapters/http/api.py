@@ -4,7 +4,16 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 
 from customer_data_product.adapters.ground_truth import LocalGroundTruthReader
@@ -25,6 +34,19 @@ class BatchResponse(BaseModel):
     duplicate_count: int = 0
     quarantined_count: int = 0
     snapshot_count: int = 0
+
+
+class ProcessingJobResponse(BaseModel):
+    job_id: str
+    batch_id: str
+    status: str
+    attempts: int
+    max_attempts: int
+
+
+class ProcessEnqueueResponse(BaseModel):
+    batch: BatchResponse
+    job: ProcessingJobResponse
 
 
 class UploadResponse(BaseModel):
@@ -55,6 +77,27 @@ class CustomerResponse(BaseModel):
     confirmed_fraud_count: int
     interaction_count: int
     last_transaction_at: datetime | None
+    customer_since: datetime | None = None
+    customer_age_band: str | None = None
+    transaction_count_7d: int = 0
+    transaction_count_30d: int = 0
+    transaction_count_90d: int = 0
+    transaction_amount_7d: float = 0
+    transaction_amount_30d: float = 0
+    transaction_amount_90d: float = 0
+    average_transaction_amount_30d: float | None = None
+    declined_transaction_count_30d: int = 0
+    decline_rate_30d: float | None = None
+    distinct_merchant_count_30d: int = 0
+    distinct_country_count_30d: int = 0
+    fraud_event_count_90d: int = 0
+    confirmed_fraud_count_90d: int = 0
+    days_since_last_transaction: int | None = None
+    customer_tenure_days: int | None = None
+    credit_utilization: float | None = None
+    delinquent_account_count: int = 0
+    has_delinquency: bool = False
+    portfolio_segment: str = "inactive"
     batch_id: str
     updated_at: datetime
     effective_at: datetime | None
@@ -107,6 +150,25 @@ class DistributionItem(BaseModel):
 class SummaryDistributionsResponse(BaseModel):
     customers_by_status: list[DistributionItem]
     transactions_by_status: list[DistributionItem]
+
+
+class PortfolioTrendPoint(BaseModel):
+    batch_id: str
+    as_of_time: datetime
+    customer_count: int
+    active_customer_count: int
+    total_balance: float
+    average_credit_utilization: float | None
+
+
+class AnalyticsSummaryResponse(BaseModel):
+    active_customer_count: int
+    customers_increased_activity_30d: int
+    average_transaction_amount_by_segment: dict[str, float]
+    customers_with_outstanding_balance: int
+    highly_utilized_percentage: float
+    customers_by_country: list[DistributionItem]
+    portfolio_trend: list[PortfolioTrendPoint]
 
 
 class GroundTruthRecord(BaseModel):
@@ -303,11 +365,22 @@ def router(
     enable_ground_truth: bool = False,
     auth_audience: str | None = None,
     auth_role_bindings: str = "",
+    auth_consumer_entitlements: str = "",
 ) -> APIRouter:
     try:
         role_bindings = json.loads(auth_role_bindings) if auth_role_bindings else {}
     except json.JSONDecodeError as exc:
         raise ValueError("AUTH_ROLE_BINDINGS must be valid JSON") from exc
+    try:
+        consumer_entitlements = (
+            json.loads(auth_consumer_entitlements)
+            if auth_consumer_entitlements
+            else {}
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError("AUTH_CONSUMER_ENTITLEMENTS must be valid JSON") from exc
+    if not isinstance(consumer_entitlements, dict):
+        raise ValueError("AUTH_CONSUMER_ENTITLEMENTS must be a JSON object")
 
     def authenticate(
         authorization: str | None = Header(default=None),
@@ -320,7 +393,9 @@ def router(
             from google.oauth2 import id_token
 
             claims = id_token.verify_oauth2_token(
-                token, requests.Request(), audience=auth_audience  # type: ignore[no-untyped-call]
+                token,
+                requests.Request(),
+                audience=auth_audience,  # type: ignore[no-untyped-call]
             )
         except Exception as exc:
             raise HTTPException(status_code=401, detail="invalid bearer token") from exc
@@ -328,18 +403,47 @@ def router(
 
     def require_role(
         *allowed: str,
-    ) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    ) -> Callable[..., dict[str, Any]]:
         def dependency(
+            request: Request,
             claims: dict[str, Any] = Depends(authenticate),
         ) -> dict[str, Any]:
             subject = str(claims.get("email") or claims.get("sub") or "")
-            roles = set(claims.get("roles", []))
-            configured_role = role_bindings.get(subject)
-            if configured_role:
-                roles.add(configured_role)
+            entitlement = consumer_entitlements.get(subject)
+            consumer: str | None = None
+            if consumer_entitlements:
+                if not isinstance(entitlement, dict):
+                    roles: set[str] = set()
+                else:
+                    consumer_value = entitlement.get("consumer")
+                    consumer = (
+                        str(consumer_value) if isinstance(consumer_value, str) else None
+                    )
+                    roles = {
+                        role
+                        for role in entitlement.get("roles", [])
+                        if isinstance(role, str)
+                    }
+            else:
+                roles = {
+                    role for role in claims.get("roles", []) if isinstance(role, str)
+                }
+                configured_role = role_bindings.get(subject)
+                if isinstance(configured_role, str):
+                    roles.add(configured_role)
+            outcome = "ALLOWED" if roles.intersection(allowed) else "DENIED"
+            route = request.scope.get("route")
+            repository.record_access_audit(
+                actor_subject=subject or "unknown",
+                consumer=consumer,
+                action=request.method,
+                resource=str(getattr(route, "path", request.url.path)),
+                outcome=outcome,
+                roles=roles,
+            )
             if not roles.intersection(allowed):
                 raise HTTPException(status_code=403, detail="insufficient role")
-            return {**claims, "_roles": roles}
+            return {**claims, "_roles": roles, "_consumer": consumer}
 
         return dependency
 
@@ -383,20 +487,30 @@ def router(
             size_bytes=size,
         )
 
-    @api.post("/batches/{batch_id}/process", response_model=BatchResponse)
+    @api.post(
+        "/batches/{batch_id}/process",
+        response_model=ProcessEnqueueResponse,
+        status_code=202,
+    )
     def process_batch(
         batch_id: str,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         _: dict[str, Any] = Depends(require_role("operator", "admin")),
-    ) -> BatchResponse:
-        if repository.get_batch(batch_id) is None:
-            raise HTTPException(status_code=404, detail="batch not found")
+    ) -> ProcessEnqueueResponse:
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise HTTPException(
+                status_code=422, detail="Idempotency-Key cannot be blank"
+            )
         try:
-            service.process(batch_id)
+            job = service.enqueue_processing(batch_id, idempotency_key)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            status_code = 404 if str(exc) == "batch not found" else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         batch = repository.get_batch(batch_id)
         assert batch is not None
-        return BatchResponse(**batch)
+        return ProcessEnqueueResponse(
+            batch=BatchResponse(**batch), job=ProcessingJobResponse(**job)
+        )
 
     @api.get("/batches/{batch_id}", response_model=BatchResponse)
     def get_batch(
@@ -457,6 +571,28 @@ def router(
             }
         return CustomerResponse(**customer)
 
+    @api.get("/customers", response_model=list[CustomerResponse])
+    def list_customers(
+        as_of: datetime | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        claims: dict[str, Any] = Depends(require_role("reader", "pii_reader", "admin")),
+    ) -> list[CustomerResponse]:
+        customers = repository.list_customer_snapshots(as_of=as_of, limit=limit)
+        if not set(claims.get("_roles", claims.get("roles", []))).intersection(
+            {"pii_reader", "admin"}
+        ):
+            customers = [
+                {
+                    **customer,
+                    "first_name": None,
+                    "last_name": None,
+                    "date_of_birth": None,
+                    "city": None,
+                }
+                for customer in customers
+            ]
+        return [CustomerResponse(**customer) for customer in customers]
+
     @api.get("/summary", response_model=SummaryResponse)
     def get_summary(
         _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
@@ -469,13 +605,17 @@ def router(
     ) -> SummaryResponse:
         return SummaryResponse(**repository.get_summary())
 
-    @api.get(
-        "/summary/distributions", response_model=SummaryDistributionsResponse
-    )
+    @api.get("/summary/distributions", response_model=SummaryDistributionsResponse)
     def get_summary_distributions(
         _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
     ) -> SummaryDistributionsResponse:
         return SummaryDistributionsResponse(**repository.get_distributions())
+
+    @api.get("/summary/analytics", response_model=AnalyticsSummaryResponse)
+    def get_analytics_summary(
+        _: dict[str, Any] = Depends(require_role("reader", "operator", "admin")),
+    ) -> AnalyticsSummaryResponse:
+        return AnalyticsSummaryResponse(**repository.get_analytics_summary())
 
     @api.get("/quality", response_model=list[QualityIssueResponse])
     def get_quality(
@@ -519,8 +659,7 @@ def router(
                 labels_by_type=report.labels_by_type,
                 subtypes=report.subtypes,
                 records=[
-                    GroundTruthRecord(**record.__dict__)
-                    for record in report.records
+                    GroundTruthRecord(**record.__dict__) for record in report.records
                 ],
                 quality_ground_truth=report.quality_ground_truth,
             )
