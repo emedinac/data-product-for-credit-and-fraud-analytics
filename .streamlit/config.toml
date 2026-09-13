@@ -1,0 +1,8 @@
+[server]
+# Source watching is unnecessary in a deployed process and can exhaust Linux
+# inotify watches in large workspaces. Restart the process after code changes.
+fileWatcherType = "none"
+
+# Used when local development overrides fileWatcherType to "auto" or
+# "watchdog". These dependency and VCS trees do not contain app source.
+folderWatchBlacklist = [".venv", ".git"]
